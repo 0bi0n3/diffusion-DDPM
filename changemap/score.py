@@ -88,7 +88,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     out = Path(out)
     rep = {"target": tg.name, "split": split, "n_windows": n, "n_no_change": sum(w.no_change for w in windows), "window_ids": ids,
            "k": max((m[tg.sample_keys[0]].shape[1] for m in arm_maps.values()), default=1),
-           **({"n_no_previous": n_no_previous, "no_previous_rule": NO_PREVIOUS_RULE}
+           **({"n_no_previous": n_no_previous, "no_previous_rule": getattr(tg, "no_previous_rule", NO_PREVIOUS_RULE)}
               if "previous_target_floor" in tg.floor_names else {}),
            **({"metric_groups": tg.groups} if hasattr(tg, "groups") else {}),
            "bootstrap": {"resamples": metrics.RESAMPLES, "seed": metrics.BOOTSTRAP_SEED},
