@@ -43,12 +43,6 @@ IDS = ["t1_10", "t1_20", "t1_30", "t1_50", "t1_60"]
 NO_CHANGE = {"t1_30"}
 
 
-@pytest.fixture(autouse=True)
-def fake_lpips(monkeypatch):
-    monkeypatch.setenv("CHANGEMAP_LPIPS_MODULE", "fake_lpips")
-    monkeypatch.delenv("CHANGEMAP_LPIPS_DIR", raising=False)
-
-
 @pytest.fixture
 def tier(tmp_path):
     d = tmp_path / "tier"
