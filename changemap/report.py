@@ -18,6 +18,16 @@ MASKED_FRAMES = ("Frames are numbered 1 to 10: a Window spans frame 1 to frame 1
                  "n/a when nothing is on) and the generated mask pooled to a Grid Map (Grid LPIPS, Grid MSE). What: "
                  "Region LPIPS and Region MSE (RGB inside the true regions; No Change Windows have none, shown as n/a). "
                  "LPIPS and MSE are over the composited full frame.")
+FLOOR_NOTES = ("Floors are scored exactly like arms (k = 1, same Window ids). Each supplies a mask and RGB. All-Black Floor: "
+               "all-zero mask, fill RGB. Mean-Map Floor: the mean training mask and mean training RGB. Previous-Target "
+               "Floor: the frame 8 to frame 9 regions as the mask, with the Previous Frame's RGB inside it. Copy-F8 Floor: "
+               "the true mask with the Previous Frame's RGB inside it. Copy-F8 Floor is an oracle location (it is given "
+               "where the change is), so it separates predicting new content from copying the Previous Frame.")
+HYPOTHESES = ("Hypotheses (Region LPIPS; a hypothesis is supported when the upper bound of the interval is below 0): "
+              "H1 Frame+Caption vs the Previous-Target Floor; H2 Frame+Caption vs Caption-only; H3 Caption-only vs "
+              "Unconditional (read with the caption leak); H4 best-of-k vs single sample for Frame+Caption; H5 "
+              "Frame+Caption vs the Copy-F8 Floor (does the model predict new content beyond copying the Previous Frame).")
+ROW_LABELS = {"copy_f8_floor": "copy_f8_floor (oracle location)"}
 HEADERS = {"lpips": "LPIPS", "mse": "MSE", "region_lpips": "Region LPIPS", "region_mse": "Region MSE",
            "mask_mse": "Mask MSE", "spill": "Spill", "grid_lpips": "Grid LPIPS", "grid_mse": "Grid MSE"}
 FRAMES = ("Frames are numbered 1 to 10: a Window spans frame 1 to frame 10, the Previous Frame is frame 9, and the "
@@ -40,6 +50,8 @@ def render(rep: dict) -> str:
          f"Samples per Window: arms k={rep['k']}, floors 1. "
          + ("Lower is better for every metric." if masked else "Lower LPIPS and MSE are better."), "", MASKED_FRAMES if masked else FRAMES, "",
          "## Caveats", "", f"- {CAPTION_LEAK}", f"- {caveat}", ""]
+    if masked:
+        L += [FLOOR_NOTES, "", HYPOTHESES, ""]
     if "previous_target_floor" in rep["rows"]:
         L += [f"Previous-Target Floor: {rep['no_previous_rule']} Windows without a usable previous pair: "
               f"{rep['n_no_previous']} of {rep['n_windows']}.", ""]
@@ -51,13 +63,15 @@ def render(rep: dict) -> str:
                 s = r["summary"][part]
                 v = s[variant]
                 cells = " | ".join(_f(v[m], 2 if m == "psnr" else 5 if m.endswith("mse") else 4) for m in cols)
-                L.append(f"| {name} | {part} | {s['n']} | {cells} |")
+                L.append(f"| {ROW_LABELS.get(name, name) if masked else name} | {part} | {s['n']} | {cells} |")
         L.append("")
     L += ["PSNR is computed from each row's mean MSE, never per Window; it is n/a when the mean MSE is 0.", "",
           f"## Paired bootstrap ({rep['bootstrap']['resamples']} resamples, seed {rep['bootstrap']['seed']}, 95% interval)",
           "", "Difference a - b of per-Window values; negative means a is better (lower).", "",
-          "| a | b | metric | mean diff | 95% low | 95% high |", "|---|---|---|---|---|---|"]
+          "| a | b | metric | mean diff | 95% low | 95% high |" + (" hypothesis |" if masked else ""),
+          "|---|---|---|---|---|---|" + ("---|" if masked else "")]
     for c in rep["comparisons"]:
-        L.append(f"| {c['a']} | {c['b']} | {c['metric']} | {_f(c['mean_diff'], 5)} | {_f(c['ci_lo'], 5)} | {_f(c['ci_hi'], 5)} |")
+        L.append(f"| {c['a']} | {c['b']} | {c['metric']} | {_f(c['mean_diff'], 5)} | {_f(c['ci_lo'], 5)} | {_f(c['ci_hi'], 5)} |"
+                 + (f" {c.get('hypothesis', '')} |" if masked else ""))
     L += ["", f"Panels: panels/ ({', '.join(rep['panel_windows'])}).", ""]
     return "\n".join(L)

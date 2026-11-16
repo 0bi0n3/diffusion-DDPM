@@ -63,6 +63,7 @@ def mtier(tmp_path):
 
 
 SMALL = ["--hidden", "32", "--depth", "2", "--heads", "2"]
+FLOORS = ["all_black_floor", "mean_map_floor", "previous_target_floor", "copy_f8_floor"]
 SCORED = [r for r in VAL if r["target_status"] != "dropped"]
 
 
@@ -98,7 +99,7 @@ def test_masked_frame_train_sample_score_end_to_end(mtier, tmp_path):
     assert z["mask"].shape == (5, 2, H, W) and z["mask"].min() >= 0 and z["mask"].max() <= 1
     rep = score(mtier, tmp_path, [samples])
     assert rep["target"] == "masked_frame" and rep["window_ids"] == IDS
-    assert list(rep["rows"]) == ["unconditional", "all_black_floor"]
+    assert list(rep["rows"]) == ["unconditional", *FLOORS]
     row_ = rep["rows"]["unconditional"]
     assert row_["k"] == 2 and set(row_["per_window"]["t1_10"]) >= {"lpips", "region_lpips", "mse", "region_mse",
                                                                     "mask_mse", "spill", "grid_lpips", "grid_mse"}
@@ -137,7 +138,7 @@ def test_true_masked_frame_scores_perfectly_and_black_content_is_not_masked(mtie
 
 def test_all_black_floor_exact_pixels(mtier, tmp_path):
     rep = score(mtier, tmp_path)
-    assert list(rep["rows"]) == ["all_black_floor"]
+    assert list(rep["rows"]) == FLOORS
     _, mask = truth_frames()
     pw = rep["rows"]["all_black_floor"]["per_window"]
     for wid, m in zip(IDS, mask):
@@ -201,7 +202,7 @@ def test_run_chains_masked_frame_and_records_frame_cache_hash(mtier, tmp_path):
     assert cli(["run", "--tier", str(mtier), "--arms", "unconditional", "--steps", "2", "--batch", "2", *SMALL,
                 "--k", "1", "--sample-steps", "2", "--lpips-dir", str(tmp_path), "--out", str(out)]) == 0
     rep = json.loads((out / "report" / "report.json").read_text())
-    assert rep["target"] == "masked_frame" and set(rep["rows"]) == {"unconditional", "all_black_floor"}
+    assert rep["target"] == "masked_frame" and set(rep["rows"]) == {"unconditional", *FLOORS}
     rec = json.loads((out / "runs" / "unconditional" / "run_record.json").read_text())
     assert {"train_frames.npz", "val_frames.npz"} <= set(rec["data_sha256"])
     log = json.loads((out / "runs" / "unconditional" / "log.json").read_text())
@@ -215,3 +216,101 @@ def test_test_split_frames_need_the_verdict_flag(mtier, tmp_path):
                    "--out", str(tmp_path / "r")])
     assert cli(["score", "--tier", str(mtier), "--split", "test", "--verdict", "--lpips-dir", str(tmp_path),
                 "--out", str(tmp_path / "r")]) == 0
+
+
+def test_copy_f8_floor_has_perfect_location_and_copies_f8_pixels(mtier, tmp_path):
+    rep = score(mtier, tmp_path)
+    assert rep["rows"]["copy_f8_floor"]["k"] == 1
+    pw = rep["rows"]["copy_f8_floor"]["per_window"]
+    for wid in IDS:
+        assert pw[wid]["mask_mse"] == [0.0] and pw[wid]["spill"] in ([0.0], [None])
+        assert pw[wid]["grid_mse"] == [0.0]
+    # F8 == F9 inside the regions (F8 differs only in the top-left 8x8) -> equals the truth ...
+    for wid in ("t1_10", "t1_20", "t1_30", "t1_60"):
+        assert pw[wid]["lpips"] == [0.0] and pw[wid]["mse"] == [0.0], wid
+    for wid in ("t1_10", "t1_20", "t1_60"):
+        assert pw[wid]["region_lpips"] == [0.0] and pw[wid]["region_mse"] == [0.0], wid
+    # ... t1_50's region covers the top-left corner where F8 != F9 -> differs
+    assert pw["t1_50"]["region_mse"][0] > 0 and pw["t1_50"]["mse"][0] > 0 and pw["t1_50"]["region_lpips"][0] > 0
+
+
+def test_previous_target_floor_is_f7_f8_regions_with_f8_pixels_and_counts_missing(mtier, tmp_path):
+    rep = score(mtier, tmp_path)
+    row_ = rep["rows"]["previous_target_floor"]
+    pw, black = row_["per_window"], rep["rows"]["all_black_floor"]["per_window"]
+    assert pw["t1_10"]["mask_mse"] == [0.0] and pw["t1_10"]["region_mse"] == [0.0]    # F7 -> F8 repeats the target
+    assert pw["t1_10"]["mse"] == [0.0] and pw["t1_10"]["spill"] == [0.0]
+    _, mask = truth_frames()
+    by = dict(zip(IDS, mask))
+    prev = {"t1_20": VAL[1]["regions"][:1], "t1_60": [VAL[5]["previous"]["regions"][0]]}
+    for wid, regs in prev.items():
+        assert pw[wid]["mask_mse"][0] == pytest.approx(float(np.mean((true_mask(regs).astype(np.float64) - by[wid]) ** 2)), abs=1e-12)
+    assert pw["t1_60"]["spill"] == [1.0]                          # previous regions entirely elsewhere
+    for wid in ("t1_30", "t1_50"):                                # no previous pair: all-zero mask, as the All-Black Floor
+        assert pw[wid] == black[wid]
+    assert row_["n_no_previous"] == 2 and rep["n_no_previous"] == 2 and "all-zero mask" in rep["no_previous_rule"]
+
+
+def test_mean_map_floor_is_the_mean_training_mask_and_rgb(mtier, tmp_path):
+    _, f9 = fake_frames(TRAIN, 1)
+    tm = [true_mask(r["regions"][:1] if r["id"] == "t2_50" else r["regions"]) for r in TRAIN if r["target_status"] != "dropped"]
+    # (fake_frames is indexed over all rows of TRAIN, including the Dropped Pair at index 3)
+    keep = [i for i, r in enumerate(TRAIN) if r["target_status"] != "dropped"]
+    tf = [f9[i] * m[..., None].astype(np.uint8) for i, m in zip(keep, tm)]
+    mean_mask, mean_rgb = np.mean(tm, axis=0), np.rint(np.mean(tf, axis=0))
+    rep = score(mtier, tmp_path)
+    assert rep["rows"]["mean_map_floor"]["k"] == 1
+    pw = rep["rows"]["mean_map_floor"]["per_window"]
+    true_rgb, true_m = truth_frames()
+    for i, wid in enumerate(IDS):
+        assert pw[wid]["mask_mse"][0] == pytest.approx(float(np.mean((mean_mask.astype(np.float64) - true_m[i]) ** 2)), abs=1e-6)
+        if wid in NO_CHANGE:
+            assert pw[wid]["region_mse"] == [None]
+        else:
+            tmk = true_m[i] > 0.5
+            want = float(np.mean(((mean_rgb[tmk] - true_rgb[i][tmk]) / 255) ** 2))
+            assert pw[wid]["region_mse"][0] == pytest.approx(want, abs=1e-6), wid
+
+
+def noisy_arm(tmp_path, name, amount, k=2):
+    """An arm whose k samples are the truth with `amount` of random RGB noise inside the regions (mask exact)."""
+    rgb, mask = truth_frames()
+    g = np.random.default_rng(abs(hash(name)) % 1000)
+    r = np.stack([[np.clip(rgb[i].astype(int) + (g.integers(-amount, amount + 1, rgb[i].shape) * (mask[i][..., None] > 0.5)),
+                           0, 255).astype(np.uint8) for _ in range(k)] for i in range(len(rgb))])
+    d = tmp_path / name
+    d.mkdir()
+    np.savez(d / f"{name}.npz", ids=np.array(IDS), rgb=r, mask=np.repeat(mask[:, None], k, 1), arm=name, target="masked_frame")
+    return d
+
+
+def test_bootstrap_comparisons_for_h1_to_h5_and_report_labels(mtier, tmp_path):
+    arms = {"unconditional": 90, "caption_only": 60, "frame_caption": 30}
+    rep = score(mtier, tmp_path, [noisy_arm(tmp_path, a, v) for a, v in arms.items()])
+    assert list(rep["rows"]) == [*arms, *FLOORS]
+    got = {(c["a"], c["b"], c["metric"]) for c in rep["comparisons"]}
+    metrics_ = ("lpips", "region_lpips", "mse")
+    want = {(f"{a}:single", f"{f}:single", m) for a in arms for f in FLOORS for m in metrics_}
+    want |= {("frame_caption:single", "caption_only:single", m) for m in metrics_}
+    want |= {("caption_only:single", "unconditional:single", m) for m in metrics_}
+    want |= {(f"{a}:best_of_k", f"{a}:single", m) for a in arms for m in metrics_}
+    assert want <= got
+    for c in rep["comparisons"]:
+        assert (c["resamples"], c["seed"]) == (1000, 35)
+    h = {c["hypothesis"]: (c["a"], c["b"]) for c in rep["comparisons"] if c["metric"] == "region_lpips" and "hypothesis" in c}
+    assert h == {"H1": ("frame_caption:single", "previous_target_floor:single"),
+                 "H2": ("frame_caption:single", "caption_only:single"),
+                 "H3": ("caption_only:single", "unconditional:single"),
+                 "H4": ("frame_caption:best_of_k", "frame_caption:single"),
+                 "H5": ("frame_caption:single", "copy_f8_floor:single")}
+    # best-of-k never worse than single
+    r = rep["rows"]["frame_caption"]
+    for part in r["summary"].values():
+        for m in ("lpips", "mse", "region_lpips"):
+            if part["single"][m] is not None:
+                assert part["best_of_k"][m] <= part["single"][m] + 1e-12
+    md = (tmp_path / "report" / "report.md").read_text()
+    assert "oracle location" in md and "Copy-F8 Floor" in md and "PSNR" in md
+    assert "H5" in md and "caption leak" in md.lower() and "LPIPS caveat" in md
+    assert rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["psnr"] is not None or \
+        rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["mse"] == 0

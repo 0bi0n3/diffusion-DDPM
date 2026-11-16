@@ -28,7 +28,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import frames, metrics
-from .data import GRID, from_model_range, mean_grid_map, to_model_range
+from .data import GRID, from_model_range, load_windows, mean_grid_map, to_model_range
 
 DEFAULT = "masked_frame"
 
@@ -114,8 +114,16 @@ class MaskedFrameTarget:
     metrics = ("lpips", "region_lpips", "mse", "region_mse", "mask_mse", "spill", "grid_lpips", "grid_mse")
     compare_metrics = ("lpips", "region_lpips", "mse")
     higher_better = frozenset()
-    floor_names = ("all_black_floor",)               # Mean-Map, Previous-Target and Copy-F8 floors: #11
+    floor_names = ("all_black_floor", "mean_map_floor", "previous_target_floor", "copy_f8_floor")
+    no_previous_rule = ("A Window with no previous Step Pair (absent or dropped) gets an all-zero mask for the "
+                        "Previous-Target Floor.")
     panel_rows = 2
+    # hypotheses of #8 (PREREG), each an (a, b) comparison read on Region LPIPS: negative upper bound supports it
+    hypotheses = {("frame_caption:single", "previous_target_floor:single"): "H1",
+                  ("frame_caption:single", "caption_only:single"): "H2",
+                  ("caption_only:single", "unconditional:single"): "H3",
+                  ("frame_caption:best_of_k", "frame_caption:single"): "H4",
+                  ("frame_caption:single", "copy_f8_floor:single"): "H5"}
     groups = {"image": ["lpips", "mse"], "where": ["mask_mse", "spill", "grid_lpips", "grid_mse"],
               "what": ["region_lpips", "region_mse"]}
 
@@ -149,10 +157,28 @@ class MaskedFrameTarget:
         rgb, mask = frames.from_model_range(x)
         return {"rgb": rgb, "mask": mask}
 
+    def _mean_training(self, tier) -> tuple:
+        """Mean-Map Floor: the mean training Change Mask (224, 400) float32 and the mean training RGB, the mean of the
+        training Masked Frames' RGB (fill 0 outside their masks), rounded to uint8 (224, 400, 3)."""
+        train = load_windows(tier, "train")
+        _, f9 = self._frames(tier, "train", train)
+        masks = np.stack([frames.change_mask(w.regions) for w in train])
+        rgb = np.stack([frames.masked_rgb(a, m) for a, m in zip(f9, masks)])
+        return masks.mean(0).astype(np.float32), np.rint(rgb.mean(0)).astype(np.uint8)
+
     def floors(self, tier, split, windows, truth=None) -> dict:
         n = len(windows)
+        mean_mask, mean_rgb = self._mean_training(tier)
+        prev_mask = np.stack([frames.change_mask(w.previous_regions or ()) for w in windows])
         return {"all_black_floor": {"rgb": np.zeros((n, 1, frames.H, frames.W, 3), np.uint8),
-                                    "mask": np.zeros((n, 1, frames.H, frames.W), np.float32)}}
+                                    "mask": np.zeros((n, 1, frames.H, frames.W), np.float32)},
+                # oracle location: the true mask, with F8's pixels inside it (fill elsewhere, like a Masked Frame)
+                "mean_map_floor": {"rgb": np.broadcast_to(mean_rgb, (n, 1, *mean_rgb.shape)).copy(),
+                                   "mask": np.broadcast_to(mean_mask, (n, 1, *mean_mask.shape)).copy()},
+                "previous_target_floor": {"rgb": frames.composite(truth["f8"], prev_mask)[:, None],
+                                          "mask": prev_mask[:, None]},
+                "copy_f8_floor": {"rgb": frames.composite(truth["f8"], truth["mask"])[:, None],
+                                  "mask": truth["mask"][:, None].copy()}}
 
     def score_samples(self, pred, truth, windows, model, batch, device) -> dict:
         rgb, mask = pred["rgb"], pred["mask"]

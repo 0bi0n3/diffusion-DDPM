@@ -31,6 +31,7 @@ class Window:
     grid_map: np.ndarray    # (28, 50) float32 coverage in [0, 1]; all black for a No Change Window
     previous_map: np.ndarray | None = None   # Grid Map of the F7 -> F8 Step Pair; None when there is no previous pair
     previous_frame: str | None = None        # optional image path of the Previous Frame (F8), for panels only
+    previous_regions: tuple | None = None    # Significant Regions of the F7 -> F8 Step Pair; None when there is no previous pair
 
     @property
     def no_change(self) -> bool:
@@ -44,6 +45,13 @@ class Window:
 def significant_regions(row: dict) -> tuple:
     keep = [tuple(float(v) for v in b) for b, ok in zip(row["regions"], row["box_ok_50_20"]) if ok]
     return tuple(keep[:REGION_CAP])
+
+
+def previous_regions(prev) -> tuple | None:
+    """Significant Regions of a previous-pair record; None when the record is absent or its pair was dropped."""
+    if not prev or prev.get("dropped"):
+        return None
+    return significant_regions(prev)
 
 
 def previous_grid_map(prev) -> np.ndarray | None:
@@ -85,7 +93,7 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
         regions = significant_regions(row) if status == "target" else ()
         prev = external[row["id"]] if row["id"] in external else row.get("previous")
         out.append(Window(row["id"], regions, hints.change_map(regions, GRID).numpy(), previous_grid_map(prev),
-                          row.get("previous_frame")))
+                          row.get("previous_frame"), previous_regions(prev)))
     return out
 
 

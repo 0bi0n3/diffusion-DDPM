@@ -74,9 +74,13 @@ The score of always predicting No Change (an empty Grid Map). What a model must 
 _Avoid_: empty baseline, null model
 
 **Mean-Map Floor**:
-The score of predicting the average training Grid Map for every Window. A location prior with no context.
+The score of predicting the average training Grid Map for every Window. A location prior with no context. For the Masked Frame: the mean training mask and mean training RGB.
 _Avoid_: average baseline
 
 **Previous-Target Floor**:
-The score of predicting the Grid Map of the Step Pair before the Last Step (F7 → F8). "The same place changes again". Borrowed from DiT2VLM.
+The score of predicting the Grid Map of the Step Pair before the Last Step (F7 → F8). "The same place changes again". Borrowed from DiT2VLM. For the Masked Frame: the F7 → F8 regions as the mask, with F8's RGB inside it; a Window with no previous pair gets an all-zero mask and is counted.
 _Avoid_: repeat baseline, copy-previous
+
+**Copy-F8 Floor**:
+Masked Frame floor: the true Change Mask with F8's RGB inside it. Location is given (an oracle), so it scores perfectly on Mask MSE and Spill; what it shows is whether a model predicts new content beyond copying the Previous Frame (H5).
+_Avoid_: copy baseline, oracle model
