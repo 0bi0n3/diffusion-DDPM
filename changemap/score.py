@@ -1,12 +1,9 @@
-"""Matched mean IoU of boxes read from Grid Maps, against Significant Regions (DiT2VLM's definition, `multibox.py`).
+"""Score sampled Grid Maps (arms) and floors against the true Grid Maps: LPIPS, pixel MSE, PSNR per row, paired bootstrap.
 
-Boxes are read from a map by `ceiling.map_boxes(map, "half")`. Per Window: one-to-one Hungarian matching of boxes to
-Significant Regions maximising total IoU (no cutoff); terms = (sum of matched IoU, boxes + regions - matched pairs).
-Pooled over Windows: sum of numerators / sum of denominators. A No Change Window with no box adds nothing; a box on a
-No Change Window adds to the denominator. With k samples, each sample index j is pooled over Windows on its own and the
-row reports the mean over j (per-sample values and per-Window terms are kept for a later bootstrap).
-No Change accuracy is separate: the share of No Change Windows whose prediction has no box
-(`change_regions.scoring.no_change_correct`: an empty answer is correct).
+Rows: each arm from its samples file, plus three floors scored identically (k = 1): All-Black, Mean-Map (average
+training Grid Map) and Previous-Target (the Grid Map of the previous F7 -> F8 Step Pair, `data.load_windows`; a Window
+with no previous pair gets an all black map and is counted in `n_no_previous`).
+Per Window: single = mean over the k samples, best_of_k = minimum over them (an oracle selection).
 """
 from __future__ import annotations
 
@@ -15,52 +12,88 @@ from pathlib import Path
 
 import numpy as np
 
-from . import siblings  # noqa: F401
-from dit2vlm import ceiling  # noqa: E402
+from . import metrics, panels, report
+from .data import GRID, load_windows, mean_grid_map
 
-from .data import load_windows
-from .multibox import pooled, window_terms
-
-THRESHOLD = "half"
-RULE = ("matched mean IoU (DiT2VLM multibox_score): boxes = map_boxes(map, 'half'); per Window a one-to-one "
-        "Hungarian matching maximising IoU, terms = (sum matched IoU, boxes + regions - matched); pooled over Windows "
-        "= sum numerators / sum denominators; with k samples, pooled per sample index then averaged over the k. "
-        "A No Change Window with no box adds nothing; a box on it adds to the denominator. "
-        "No Change accuracy is reported apart: share of No Change Windows whose prediction has no box.")
+NO_PREVIOUS_RULE = "A Window with no previous Step Pair (absent or dropped) is scored as all black."
+ARM_ORDER = ("unconditional", "caption_only", "frame_only", "frame_caption")
+FLOOR_NAMES = ("all_black_floor", "mean_map_floor", "previous_target_floor")
+PANEL_WINDOWS = 4
 
 
-def window_boxes(pred_map) -> list:
-    return ceiling.map_boxes(pred_map, THRESHOLD)
+def _row(kind, maps, truth, windows, model, batch, device) -> dict:
+    """maps: (n, k, 28, 50); truth: (n, 28, 50)."""
+    n, k = maps.shape[:2]
+    flat_t = np.repeat(truth, k, axis=0)
+    flat_p = maps.reshape(n * k, *GRID)
+    pw = {"lpips": metrics.lpips_per_sample(model, flat_p, flat_t, batch, device).reshape(n, k),
+          "mse": metrics.mse_per_sample(flat_p, flat_t).reshape(n, k)}
+    nc = np.array([w.no_change for w in windows])
+    summary = {"all": metrics.summarise(pw, np.ones(n, bool)), "change": metrics.summarise(pw, ~nc),
+               "no_change": metrics.summarise(pw, nc)}
+    row = {"kind": kind, "k": k, "summary": summary,
+           "per_window": {w.id: {"lpips": pw["lpips"][i].tolist(), "mse": pw["mse"][i].tolist()}
+                          for i, w in enumerate(windows)}}
+    return row, pw
 
 
-def _row(maps_per_window, windows) -> dict:
-    """maps_per_window[i]: (k, 28, 50) maps of Window i."""
-    k = len(maps_per_window[0])
-    boxes = [[window_boxes(m) for m in maps] for maps in maps_per_window]          # [window][sample]
-    terms = [[window_terms(boxes[i][j], w.regions) for j in range(k)] for i, w in enumerate(windows)]
-    per_sample = [pooled([terms[i][j] for i in range(len(windows))]) for j in range(k)]
-    nc = [i for i, w in enumerate(windows) if w.no_change]
-    nc_acc = [float(np.mean([not boxes[i][j] for i in nc])) for j in range(k)] if nc else None
-    return {"k": k, "matched_miou": float(np.mean(per_sample)), "per_sample_miou": per_sample,
-            "no_change_accuracy": float(np.mean(nc_acc)) if nc else None,
-            "boxes_per_window": float(np.mean([len(b) for bw in boxes for b in bw])),
-            "terms": {w.id: [list(t) for t in terms[i]] for i, w in enumerate(windows)}}
+def _comparisons(values: dict, arms: list) -> list:
+    """values[name] = {"single": {metric: (n,)}, "best_of_k": {...}}."""
+    pairs = []
+    for a in arms:
+        pairs += [(f"{a}:{'single'}", f"{f}:single") for f in FLOOR_NAMES]
+    for a, b in (("frame_caption", "caption_only"), ("caption_only", "unconditional")):
+        if a in arms and b in arms:
+            pairs.append((f"{a}:single", f"{b}:single"))
+    pairs += [(f"{a}:best_of_k", f"{a}:single") for a in arms]
+    out = []
+    for a, b in pairs:
+        for metric in ("lpips", "mse"):
+            va, vb = (values[x.split(":")[0]][x.split(":")[1]][metric] for x in (a, b))
+            out.append({"a": a, "b": b, "metric": metric, **metrics.paired_bootstrap(va - vb)})
+    return out
 
 
-def score(samples, tier, split: str, out, verdict: bool = False) -> dict:
+def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None, device: str = "cpu",
+          batch: int = 4, panel_windows: int = PANEL_WINDOWS) -> dict:
     windows = load_windows(tier, split, verdict)
     ids = [w.id for w in windows]
-    rows = {}
+    truth = np.stack([w.grid_map for w in windows])
+    model = metrics.load_lpips(lpips_dir, device)
+    arm_maps = {}
     for path in samples:
         z = np.load(path)
         if list(z["ids"]) != ids:
             raise ValueError(f"{path}: Window ids differ from the {split} split")
-        rows[str(z["arm"])] = _row(z["maps"], windows)
-    rows["all_black_floor"] = _row([np.zeros((1, 28, 50))] * len(windows), windows)
-    rows["oracle"] = _row([w.grid_map[None] for w in windows], windows)
-    report = {"split": split, "threshold": THRESHOLD, "scoring_rule": RULE, "n_windows": len(ids),
-              "n_no_change": sum(w.no_change for w in windows), "window_ids": ids, "rows": rows}
+        arm_maps[str(z["arm"])] = z["maps"]
+    arm_maps = dict(sorted(arm_maps.items(), key=lambda kv: (ARM_ORDER.index(kv[0]) if kv[0] in ARM_ORDER else 99, kv[0])))
+    n = len(windows)
+    floor_maps = {
+        "all_black_floor": np.zeros((n, 1, *GRID), np.float32),
+        "mean_map_floor": np.broadcast_to(mean_grid_map(tier), (n, 1, *GRID)).copy(),
+        "previous_target_floor": np.stack([(w.previous_map if w.has_previous else np.zeros(GRID, np.float32))[None]
+                                           for w in windows]).astype(np.float32),
+    }
+    n_no_previous = sum(not w.has_previous for w in windows)
+    rows, values, per_arm = {}, {}, {}
+    for kind, group in (("arm", arm_maps), ("floor", floor_maps)):
+        for name, maps in group.items():
+            rows[name], pw = _row(kind, maps, truth, windows, model, batch, device)
+            values[name] = {"single": {m: pw[m].mean(1) for m in pw}, "best_of_k": {m: pw[m].min(1) for m in pw}}
+            if kind == "arm":
+                per_arm[name] = {"maps": maps, "lpips": pw["lpips"]}
+    rows["previous_target_floor"]["n_no_previous"] = n_no_previous
+    panel_ids = ids[:panel_windows]
     out = Path(out)
+    rep = {"split": split, "n_windows": n, "n_no_change": sum(w.no_change for w in windows), "window_ids": ids,
+           "k": max((m.shape[1] for m in arm_maps.values()), default=1), "n_no_previous": n_no_previous,
+           "no_previous_rule": NO_PREVIOUS_RULE, "bootstrap": {"resamples": metrics.RESAMPLES, "seed": metrics.BOOTSTRAP_SEED},
+           "lpips": {"module": getattr(model, "__module__", type(model).__module__), "upscale": metrics.UPSCALE,
+                     "weights_dir": str(lpips_dir) if lpips_dir else None},
+           "caveats": [report.CAPTION_LEAK, report.LPIPS_CAVEAT], "panel_windows": panel_ids,
+           "rows": rows, "comparisons": _comparisons(values, list(arm_maps))}
     out.mkdir(parents=True, exist_ok=True)
-    (out / "report.json").write_text(json.dumps(report, indent=1) + "\n")
-    return report
+    (out / "report.json").write_text(json.dumps(rep, indent=1) + "\n")
+    (out / "report.md").write_text(report.render(rep))
+    panels.write_panels(out / "panels", per_arm, windows, truth, panel_ids)
+    return rep

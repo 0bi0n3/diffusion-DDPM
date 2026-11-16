@@ -29,15 +29,39 @@ class Window:
     id: str
     regions: tuple          # Significant Regions of the Last Step, 1920x1080 px boxes (50/20 rule, at most 10)
     grid_map: np.ndarray    # (28, 50) float32 coverage in [0, 1]; all black for a No Change Window
+    previous_map: np.ndarray | None = None   # Grid Map of the F7 -> F8 Step Pair; None when there is no previous pair
+    previous_frame: str | None = None        # optional image path of the Previous Frame (F8), for panels only
 
     @property
     def no_change(self) -> bool:
         return not self.regions
 
+    @property
+    def has_previous(self) -> bool:
+        return self.previous_map is not None
+
 
 def significant_regions(row: dict) -> tuple:
     keep = [tuple(float(v) for v in b) for b, ok in zip(row["regions"], row["box_ok_50_20"]) if ok]
     return tuple(keep[:REGION_CAP])
+
+
+def previous_grid_map(prev) -> np.ndarray | None:
+    """Grid Map of a previous-pair record `{"regions", "box_ok_50_20", "dropped"?}`; None when the record is absent
+    or its pair was dropped (the Previous-Target Floor then has no map: scoring treats it as all black)."""
+    if not prev or prev.get("dropped"):
+        return None
+    return hints.change_map(significant_regions(prev), GRID).numpy()
+
+
+def read_previous(tier, split: str) -> dict:
+    """Previous-pair records by Window id, from the explicit per-split file `<split>_previous.jsonl`
+    (rows `{"id", "previous": {...} | null}`). `{}` when the file is absent (inline row fields are used instead)."""
+    path = Path(tier) / f"{split}_previous.jsonl"
+    if not path.exists():
+        return {}
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return {r["id"]: r.get("previous") for r in rows}
 
 
 def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
@@ -48,6 +72,7 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
     if split not in SPLITS and split != TEST:
         raise ValueError(f"unknown split {split!r}")
     out = []
+    external = read_previous(tier, split)
     for line in (Path(tier) / f"{split}_targets.jsonl").read_text().splitlines():
         if not line.strip():
             continue
@@ -58,7 +83,9 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
         if status not in ("target", "no_change"):
             raise ValueError(f"{row['id']}: target_status {status!r} has no Grid Map")
         regions = significant_regions(row) if status == "target" else ()
-        out.append(Window(row["id"], regions, hints.change_map(regions, GRID).numpy()))
+        prev = external[row["id"]] if row["id"] in external else row.get("previous")
+        out.append(Window(row["id"], regions, hints.change_map(regions, GRID).numpy(), previous_grid_map(prev),
+                          row.get("previous_frame")))
     return out
 
 
@@ -86,3 +113,7 @@ def load_context(tier, split: str, ids, verdict: bool = False) -> tuple[np.ndarr
         raise ValueError(f"{path} has no context for Windows {missing[:3]}")
     idx = [row[i] for i in ids]
     return z["f8"][idx].astype(np.float32), z["caption"][idx].astype(np.float32)
+
+def mean_grid_map(tier) -> np.ndarray:
+    """Mean-Map Floor: the average training Grid Map, (28, 50)."""
+    return np.mean([w.grid_map for w in load_windows(tier, "train")], axis=0).astype(np.float32)
