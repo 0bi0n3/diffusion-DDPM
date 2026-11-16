@@ -7,7 +7,7 @@ name = "changemap"
 version = "0.1.0"
 description = "Flow-matching Change Map generator (Grid Map on the 28x50 Token Grid)"
 requires-python = ">=3.10"
-dependencies = ["torch", "numpy", "scipy"]
+dependencies = ["torch", "numpy", "scipy", "matplotlib"]
 
 [project.scripts]
 changemap = "changemap.cli:main"

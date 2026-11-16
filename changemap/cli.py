@@ -42,9 +42,11 @@ def _parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("score")
     common(c, True)
-    c.add_argument("--samples", action="append", required=True, type=Path,
-                   help="a samples dir or .npz; repeat for several arms")
+    c.add_argument("--samples", action="append", default=[], type=Path,
+                   help="a samples dir or .npz; repeat for several arms (none: floors only)")
     c.add_argument("--out", required=True, type=Path)
+    c.add_argument("--lpips-dir", type=Path, help="folder with vgg16-397923af.pth and vgg.pth (env CHANGEMAP_LPIPS_DIR)")
+    c.add_argument("--device", default="cpu", help=DEVICE_HELP)
 
     r = sub.add_parser("run")
     common(r, True)
@@ -59,6 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--k", type=int, default=8)
     r.add_argument("--sample-steps", type=int, default=50)
     r.add_argument("--seed", type=int, default=35)
+    r.add_argument("--lpips-dir", type=Path, help="folder with the LPIPS weights (env CHANGEMAP_LPIPS_DIR)")
     r.add_argument("--device", default="cpu", help=DEVICE_HELP)
     return p
 
@@ -80,7 +83,7 @@ def main(argv=None) -> int:
         elif a.cmd == "sample":
             sample_mod.sample(a.run, a.tier, a.split, a.k, a.steps, a.seed, a.out, a.verdict, a.device)
         elif a.cmd == "score":
-            score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict)
+            score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device)
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
@@ -90,8 +93,8 @@ def main(argv=None) -> int:
                 train_mod.train(a.tier, arm, a.steps, run, a.batch, a.lr, a.hidden, a.depth, a.heads, a.seed, a.device)
                 samples.append(sample_mod.sample(run, a.tier, a.split, a.k, a.sample_steps, a.seed,
                                                  a.out / "samples" / arm, a.verdict, a.device))
-            score_mod.score(samples, a.tier, a.split, a.out / "report", a.verdict)
-    except (PermissionError, ValueError) as e:
+            score_mod.score(samples, a.tier, a.split, a.out / "report", a.verdict, a.lpips_dir, a.device)
+    except (PermissionError, ValueError, FileNotFoundError) as e:
         p.exit(2, f"changemap: error: {e}\n")
     return 0
 
