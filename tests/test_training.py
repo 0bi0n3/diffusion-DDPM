@@ -210,3 +210,18 @@ def test_submit_dry_run_prints_command_and_submits_nothing(tmp_path, monkeypatch
     out = capsys.readouterr().out
     assert rc == 0 and "sbatch" in out and "--dependency=afterany:123" in out and "--time=24:00:00" in out
     assert not (tmp_path / "ledger.tsv").exists()
+
+
+def test_context_arm_resume_and_record_hashes_context(tier, tmp_path):
+    from test_arms import write_context
+    for split in ("train", "val"):
+        write_context(tier, split, [{"id": f"{split}_{r['id']}"} for r in ROWS], 3)
+    argv = ["--tier", str(tier), "--arm", "frame_caption", "--steps", "4", "--batch", "4", "--hidden", "32",
+            "--depth", "2", "--heads", "2", "--val-n", "3", "--val-every", "2", "--val-sample-steps", "2"]
+    full, part = tmp_path / "full", tmp_path / "part"
+    assert main(["train", *argv, "--out", str(full)]) == 0
+    assert main(["train", *argv, "--out", str(part), "--stop-after", "1"]) == 0
+    assert main(["train", *argv, "--out", str(part)]) == 0
+    assert same(weights(full / "model.pt"), weights(part / "model.pt"))
+    assert {"train_context.npz", "val_context.npz"} <= set(record(part)["data_sha256"])
+    assert [e["step"] for e in json.loads((part / "log.json").read_text())["validation"]] == [2, 4]
