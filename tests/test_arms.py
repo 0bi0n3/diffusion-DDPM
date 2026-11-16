@@ -5,7 +5,7 @@ import shutil
 import numpy as np
 import pytest
 
-from changemap.cli import main
+from grid import main
 from test_end_to_end import TRAIN, VAL, tier  # noqa: F401
 
 ARMS = ["unconditional", "caption_only", "frame_only", "frame_caption"]

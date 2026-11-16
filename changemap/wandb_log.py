@@ -78,8 +78,8 @@ class RunLog:
     def train(self, step: int, loss: float, lr: float) -> None:
         self._log("train", step, {"train/loss": loss, "train/lr": lr})
 
-    def validation(self, step: int, val_loss: float, grid_mse: float) -> None:
-        self._log("val", step, {"val/loss": val_loss, "val/grid_mse": grid_mse})
+    def validation(self, step: int, val_loss: float, mse: float) -> None:
+        self._log("val", step, {"val/loss": val_loss, "val/mse": mse})
 
     def close(self) -> None:
         if self.run is not None:

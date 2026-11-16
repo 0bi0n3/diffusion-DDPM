@@ -1,4 +1,4 @@
-"""Image-similarity metrics of Grid Maps: LPIPS (VGG16, `latentdit.lpips`), pixel MSE, PSNR, paired bootstrap.
+"""Image-similarity metrics of Grid Maps and Masked Frames: LPIPS (VGG16, `latentdit.lpips`), pixel MSE, PSNR, paired bootstrap.
 
 LPIPS module injection: `load_lpips` imports the module named by `CHANGEMAP_LPIPS_MODULE` (default
 `latentdit.lpips`) and calls its `load(dir)`. Any module with that contract works, which is how tests use a tiny fake.
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import warnings
 
 import numpy as np
 import torch
@@ -68,25 +69,93 @@ def psnr(mean_mse):
     return None if mean_mse is None or mean_mse <= 0 else float(10 * np.log10(1 / mean_mse))
 
 
-def summarise(per_window: dict, mask) -> dict:
-    """per_window: {"lpips": (n, k), "mse": (n, k)}; mask: (n,) bool of the Windows in this part."""
+def mean_ignoring_nan(a, axis=None):
+    """Mean ignoring NaN (an undefined metric); plain `np.mean` when nothing is undefined."""
+    if not np.isnan(a).any():
+        return np.mean(a, axis=axis)
+    with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return np.nanmean(a, axis=axis)
+
+
+def best_of_k(a, higher: bool):
+    """Best sample of each Window over axis 1 (min, or max for higher-is-better); NaN when all are undefined."""
+    if not np.isnan(a).any():
+        return a.max(axis=1) if higher else a.min(axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return np.nanmax(a, axis=1) if higher else np.nanmin(a, axis=1)
+
+
+def summarise(per_window: dict, mask, higher_better=()) -> dict:
+    """per_window: {metric: (n, k)}, NaN where a metric is undefined for a Window (region metrics of a No Change
+    Window, Spill when nothing is on); mask: (n,) bool of the Windows in this part. Each metric is averaged over the
+    Windows where it is defined (None when there is none). PSNR comes from the row's mean `mse`."""
     mask = np.asarray(mask, bool)
+    names = list(per_window)
+    empty = {**{m: None for m in names}, "psnr": None}
     if not mask.any():
-        empty = {"lpips": None, "mse": None, "psnr": None}
         return {"n": 0, "single": dict(empty), "best_of_k": dict(empty)}
     out = {"n": int(mask.sum())}
-    for name, reduce in (("single", np.mean), ("best_of_k", np.min)):
-        l = float(reduce(per_window["lpips"][mask], axis=1).mean())
-        m = float(reduce(per_window["mse"][mask], axis=1).mean())
-        out[name] = {"lpips": l, "mse": m, "psnr": psnr(m)}
+    for variant in ("single", "best_of_k"):
+        vals = {}
+        for m in names:
+            a = per_window[m][mask]
+            per = mean_ignoring_nan(a, axis=1) if variant == "single" else best_of_k(a, m in higher_better)
+            vals[m] = None if np.isnan(per).all() else float(mean_ignoring_nan(per))
+        vals["psnr"] = psnr(vals["mse"]) if "mse" in vals else None
+        out[variant] = vals
     return out
 
 
-def paired_bootstrap(diffs, resamples: int = RESAMPLES, seed: int = BOOTSTRAP_SEED) -> dict:
-    """Mean of per-Window differences and a 95% percentile interval over Window resamples."""
+def paired_bootstrap(diffs, resamples: int = RESAMPLES, seed: int = BOOTSTRAP_SEED) -> dict | None:
+    """Mean of per-Window differences and a 95% percentile interval over Window resamples. Windows where the
+    difference is undefined (NaN) are left out; None when none is left."""
     d = np.asarray(diffs, np.float64)
+    d = d[~np.isnan(d)]
+    if not len(d):
+        return None
     idx = np.random.default_rng(seed).integers(0, len(d), (resamples, len(d)))
     means = d[idx].mean(axis=1)
     lo, hi = np.percentile(means, [2.5, 97.5])
     return {"mean_diff": float(d.mean()), "ci_lo": float(lo), "ci_hi": float(hi), "n": int(len(d)),
             "resamples": resamples, "seed": seed}
+
+
+# ---- Masked Frame (224 x 400 RGB + Change Mask, no upscaling) --------------------------------------------------
+
+def _to_input(img) -> torch.Tensor:
+    """(B, H, W, 3) uint8 -> (B, 3, H, W) float in [-1, 1]."""
+    return torch.as_tensor(np.ascontiguousarray(img)).permute(0, 3, 1, 2).float() / 127.5 - 1
+
+
+@torch.no_grad()
+def lpips_images(model, preds, truths, batch: int = 4, device: str = "cpu") -> np.ndarray:
+    """LPIPS of each (pred, truth) pair of (N, H, W, 3) uint8 images, at their own size (no upscaling)."""
+    out = []
+    for i in range(0, len(preds), batch):
+        x, y = _to_input(preds[i:i + batch]).to(device), _to_input(truths[i:i + batch]).to(device)
+        out.append(_distance(model, x, y).cpu().numpy())
+    return np.concatenate(out).astype(np.float64) if out else np.zeros(0)
+
+
+def frame_mse(pred, truth) -> float:
+    """MSE of two uint8 RGB images on the [0, 1] scale."""
+    d = (np.asarray(pred, np.float32) - np.asarray(truth, np.float32)) / 255
+    return float((d.astype(np.float64) ** 2).mean())
+
+
+def mask_metrics(pred_mask, true_mask) -> tuple:
+    """(Mask MSE, Spill) of a generated Change Mask against the true one (values in [0, 1], on where > 0.5).
+    Spill is the share of mask-on pixels outside the true regions; NaN when nothing is on."""
+    p, t = np.asarray(pred_mask, np.float64), np.asarray(true_mask, np.float64)
+    on = p > 0.5
+    n_on = int(on.sum())
+    return float(((p - t) ** 2).mean()), (float((on & (t <= 0.5)).sum() / n_on) if n_on else float("nan"))
+
+
+def pool_mask(mask, block: int = 8) -> np.ndarray:
+    """(H, W) Change Mask -> (H/8, W/8) Grid Map: the share of each square that is on (> 0.5)."""
+    on = (np.asarray(mask) > 0.5).astype(np.float32)
+    h, w = on.shape
+    return on.reshape(h // block, block, w // block, block).mean((1, 3))
