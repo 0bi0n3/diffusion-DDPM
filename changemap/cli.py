@@ -30,6 +30,8 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("--heads", type=int, default=6)
     t.add_argument("--seed", type=int, default=35)
     t.add_argument("--device", default="cpu", help=DEVICE_HELP)
+    from . import train as train_mod
+    train_mod.add_arguments(t)
 
     s = sub.add_parser("sample")
     common(s, True)
@@ -79,7 +81,8 @@ def main(argv=None) -> int:
     from . import score as score_mod, sample as sample_mod, train as train_mod
     try:
         if a.cmd == "train":
-            train_mod.train(a.tier, a.arm, a.steps, a.out, a.batch, a.lr, a.hidden, a.depth, a.heads, a.seed, a.device)
+            train_mod.train(a.tier, a.arm, a.steps, a.out, a.batch, a.lr, a.hidden, a.depth, a.heads, a.seed, a.device,
+                            train_mod.options_from(a))
         elif a.cmd == "sample":
             sample_mod.sample(a.run, a.tier, a.split, a.k, a.steps, a.seed, a.out, a.verdict, a.device)
         elif a.cmd == "score":
