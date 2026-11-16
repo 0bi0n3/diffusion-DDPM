@@ -270,3 +270,47 @@ def test_mean_map_floor_is_the_mean_training_mask_and_rgb(mtier, tmp_path):
             tmk = true_m[i] > 0.5
             want = float(np.mean(((mean_rgb[tmk] - true_rgb[i][tmk]) / 255) ** 2))
             assert pw[wid]["region_mse"][0] == pytest.approx(want, abs=1e-6), wid
+
+
+def noisy_arm(tmp_path, name, amount, k=2):
+    """An arm whose k samples are the truth with `amount` of random RGB noise inside the regions (mask exact)."""
+    rgb, mask = truth_frames()
+    g = np.random.default_rng(abs(hash(name)) % 1000)
+    r = np.stack([[np.clip(rgb[i].astype(int) + (g.integers(-amount, amount + 1, rgb[i].shape) * (mask[i][..., None] > 0.5)),
+                           0, 255).astype(np.uint8) for _ in range(k)] for i in range(len(rgb))])
+    d = tmp_path / name
+    d.mkdir()
+    np.savez(d / f"{name}.npz", ids=np.array(IDS), rgb=r, mask=np.repeat(mask[:, None], k, 1), arm=name, target="masked_frame")
+    return d
+
+
+def test_bootstrap_comparisons_for_h1_to_h5_and_report_labels(mtier, tmp_path):
+    arms = {"unconditional": 90, "caption_only": 60, "frame_caption": 30}
+    rep = score(mtier, tmp_path, [noisy_arm(tmp_path, a, v) for a, v in arms.items()])
+    assert list(rep["rows"]) == [*arms, *FLOORS]
+    got = {(c["a"], c["b"], c["metric"]) for c in rep["comparisons"]}
+    metrics_ = ("lpips", "region_lpips", "mse")
+    want = {(f"{a}:single", f"{f}:single", m) for a in arms for f in FLOORS for m in metrics_}
+    want |= {("frame_caption:single", "caption_only:single", m) for m in metrics_}
+    want |= {("caption_only:single", "unconditional:single", m) for m in metrics_}
+    want |= {(f"{a}:best_of_k", f"{a}:single", m) for a in arms for m in metrics_}
+    assert want <= got
+    for c in rep["comparisons"]:
+        assert (c["resamples"], c["seed"]) == (1000, 35)
+    h = {c["hypothesis"]: (c["a"], c["b"]) for c in rep["comparisons"] if c["metric"] == "region_lpips" and "hypothesis" in c}
+    assert h == {"H1": ("frame_caption:single", "previous_target_floor:single"),
+                 "H2": ("frame_caption:single", "caption_only:single"),
+                 "H3": ("caption_only:single", "unconditional:single"),
+                 "H4": ("frame_caption:best_of_k", "frame_caption:single"),
+                 "H5": ("frame_caption:single", "copy_f8_floor:single")}
+    # best-of-k never worse than single
+    r = rep["rows"]["frame_caption"]
+    for part in r["summary"].values():
+        for m in ("lpips", "mse", "region_lpips"):
+            if part["single"][m] is not None:
+                assert part["best_of_k"][m] <= part["single"][m] + 1e-12
+    md = (tmp_path / "report" / "report.md").read_text()
+    assert "oracle location" in md and "Copy-F8 Floor" in md and "PSNR" in md
+    assert "H5" in md and "caption leak" in md.lower() and "LPIPS caveat" in md
+    assert rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["psnr"] is not None or \
+        rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["mse"] == 0

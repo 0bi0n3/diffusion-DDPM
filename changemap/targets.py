@@ -118,6 +118,12 @@ class MaskedFrameTarget:
     no_previous_rule = ("A Window with no previous Step Pair (absent or dropped) gets an all-zero mask for the "
                         "Previous-Target Floor.")
     panel_rows = 2
+    # hypotheses of #8 (PREREG), each an (a, b) comparison read on Region LPIPS: negative upper bound supports it
+    hypotheses = {("frame_caption:single", "previous_target_floor:single"): "H1",
+                  ("frame_caption:single", "caption_only:single"): "H2",
+                  ("caption_only:single", "unconditional:single"): "H3",
+                  ("frame_caption:best_of_k", "frame_caption:single"): "H4",
+                  ("frame_caption:single", "copy_f8_floor:single"): "H5"}
     groups = {"image": ["lpips", "mse"], "where": ["mask_mse", "spill", "grid_lpips", "grid_mse"],
               "what": ["region_lpips", "region_mse"]}
 

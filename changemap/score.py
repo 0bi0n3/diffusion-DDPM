@@ -48,7 +48,8 @@ def _comparisons(values: dict, arms: list, tg) -> list:
             va, vb = (values[x.split(":")[0]][x.split(":")[1]][metric] for x in (a, b))
             boot = metrics.paired_bootstrap(va - vb)
             if boot is not None:
-                out.append({"a": a, "b": b, "metric": metric, **boot})
+                h = getattr(tg, "hypotheses", {}).get((a, b))
+                out.append({"a": a, "b": b, "metric": metric, **({"hypothesis": h} if h else {}), **boot})
     return out
 
 
