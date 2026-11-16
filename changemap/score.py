@@ -12,8 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import metrics, panels, report
-from .data import GRID, load_windows, mean_grid_map
+from . import metrics, panels, report, targets
+from .data import GRID, load_windows
 
 NO_PREVIOUS_RULE = "A Window with no previous Step Pair (absent or dropped) is scored as all black."
 ARM_ORDER = ("unconditional", "caption_only", "frame_only", "frame_caption")
@@ -55,25 +55,22 @@ def _comparisons(values: dict, arms: list) -> list:
 
 
 def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None, device: str = "cpu",
-          batch: int = 4, panel_windows: int = PANEL_WINDOWS) -> dict:
+          batch: int = 4, panel_windows: int = PANEL_WINDOWS, target: str = targets.DEFAULT) -> dict:
+    tg = targets.get(target)
     windows = load_windows(tier, split, verdict)
     ids = [w.id for w in windows]
-    truth = np.stack([w.grid_map for w in windows])
+    truth = np.stack([tg.truth(w) for w in windows])
     model = metrics.load_lpips(lpips_dir, device)
     arm_maps = {}
     for path in samples:
         z = np.load(path)
+        targets.check(tg.name, str(z["target"]) if "target" in z.files else None, f"samples {path}")
         if list(z["ids"]) != ids:
             raise ValueError(f"{path}: Window ids differ from the {split} split")
         arm_maps[str(z["arm"])] = z["maps"]
     arm_maps = dict(sorted(arm_maps.items(), key=lambda kv: (ARM_ORDER.index(kv[0]) if kv[0] in ARM_ORDER else 99, kv[0])))
     n = len(windows)
-    floor_maps = {
-        "all_black_floor": np.zeros((n, 1, *GRID), np.float32),
-        "mean_map_floor": np.broadcast_to(mean_grid_map(tier), (n, 1, *GRID)).copy(),
-        "previous_target_floor": np.stack([(w.previous_map if w.has_previous else np.zeros(GRID, np.float32))[None]
-                                           for w in windows]).astype(np.float32),
-    }
+    floor_maps = tg.floors(tier, windows)
     n_no_previous = sum(not w.has_previous for w in windows)
     rows, values, per_arm = {}, {}, {}
     for kind, group in (("arm", arm_maps), ("floor", floor_maps)):
@@ -85,7 +82,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     rows["previous_target_floor"]["n_no_previous"] = n_no_previous
     panel_ids = ids[:panel_windows]
     out = Path(out)
-    rep = {"split": split, "n_windows": n, "n_no_change": sum(w.no_change for w in windows), "window_ids": ids,
+    rep = {"target": tg.name, "split": split, "n_windows": n, "n_no_change": sum(w.no_change for w in windows), "window_ids": ids,
            "k": max((m.shape[1] for m in arm_maps.values()), default=1), "n_no_previous": n_no_previous,
            "no_previous_rule": NO_PREVIOUS_RULE, "bootstrap": {"resamples": metrics.RESAMPLES, "seed": metrics.BOOTSTRAP_SEED},
            "lpips": {"module": getattr(model, "__module__", type(model).__module__), "upscale": metrics.UPSCALE,

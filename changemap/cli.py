@@ -5,6 +5,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import targets
+
 DEVICE_HELP = "torch device (default cpu; use cuda only for cluster jobs)"
 
 
@@ -14,6 +16,8 @@ def _parser() -> argparse.ArgumentParser:
 
     def common(s, split=False):
         s.add_argument("--tier", required=True, type=Path)
+        s.add_argument("--target", choices=tuple(targets.TARGETS), default=targets.DEFAULT,
+                       help="what the model generates (see changemap.targets)")
         if split:
             s.add_argument("--split", default="val")
             s.add_argument("--verdict", action="store_true", help="allow reading the test split")
@@ -82,21 +86,23 @@ def main(argv=None) -> int:
     try:
         if a.cmd == "train":
             train_mod.train(a.tier, a.arm, a.steps, a.out, a.batch, a.lr, a.hidden, a.depth, a.heads, a.seed, a.device,
-                            train_mod.options_from(a))
+                            train_mod.options_from(a), a.target)
         elif a.cmd == "sample":
-            sample_mod.sample(a.run, a.tier, a.split, a.k, a.steps, a.seed, a.out, a.verdict, a.device)
+            sample_mod.sample(a.run, a.tier, a.split, a.k, a.steps, a.seed, a.out, a.verdict, a.device, target=a.target)
         elif a.cmd == "score":
-            score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device)
+            score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target)
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
             samples = []
             for arm in a.arms:
                 run = a.out / "runs" / arm
-                train_mod.train(a.tier, arm, a.steps, run, a.batch, a.lr, a.hidden, a.depth, a.heads, a.seed, a.device)
+                train_mod.train(a.tier, arm, a.steps, run, a.batch, a.lr, a.hidden, a.depth, a.heads, a.seed, a.device,
+                                target=a.target)
                 samples.append(sample_mod.sample(run, a.tier, a.split, a.k, a.sample_steps, a.seed,
-                                                 a.out / "samples" / arm, a.verdict, a.device))
-            score_mod.score(samples, a.tier, a.split, a.out / "report", a.verdict, a.lpips_dir, a.device)
+                                                 a.out / "samples" / arm, a.verdict, a.device, target=a.target))
+            score_mod.score(samples, a.tier, a.split, a.out / "report", a.verdict, a.lpips_dir, a.device,
+                            target=a.target)
     except (PermissionError, ValueError, FileNotFoundError) as e:
         p.exit(2, f"changemap: error: {e}\n")
     return 0

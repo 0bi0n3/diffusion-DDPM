@@ -59,8 +59,8 @@ class CrossAttention(nn.Module):
 
 
 class ChangeMapDiT(DiT):
-    def __init__(self, arm: str, hidden_size=384, depth=12, num_heads=6):
-        super().__init__(grid=GRID, channels=1, context_channels=FRAME_CHANNELS, hidden_size=hidden_size,
+    def __init__(self, arm: str, hidden_size=384, depth=12, num_heads=6, channels: int = 1):
+        super().__init__(grid=GRID, channels=channels, context_channels=FRAME_CHANNELS, hidden_size=hidden_size,
                          depth=depth, num_heads=num_heads)
         self.arm = arm
         self.use_frame, self.use_caption = ARMS[arm]
@@ -101,10 +101,10 @@ class ChangeMapDiT(DiT):
         return self.final_layer(x, c).reshape(b, h, w, self.channels)
 
 
-def build_model(arm: str, hidden: int = 384, depth: int = 12, heads: int = 6) -> ChangeMapDiT:
+def build_model(arm: str, hidden: int = 384, depth: int = 12, heads: int = 6, channels: int = 1) -> ChangeMapDiT:
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}: choose from {tuple(ARMS)}")
-    return ChangeMapDiT(arm, hidden, depth, heads)
+    return ChangeMapDiT(arm, hidden, depth, heads, channels)
 
 
 def n_params(model: nn.Module) -> int:
