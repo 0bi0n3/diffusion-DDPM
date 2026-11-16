@@ -40,3 +40,19 @@ _Avoid_: prompt, description, context
 **Conditioning Arm**:
 One of four models trained alike that differ only in context: Unconditional, Caption-only, Frame-only (Previous Frame), Frame+Caption.
 _Avoid_: ablation, variant
+
+**Grid Map**:
+The 28×50 coverage form of a Change Map: each Token Grid square holds the fraction of it covered by Significant Regions, in [0, 1] (scaled to [−1, 1] for training). The model's target and output.
+_Avoid_: heatmap, mask
+
+**All-Black Floor**:
+The score of always predicting No Change (an empty Grid Map). What a model must beat to have learned anything about where change happens.
+_Avoid_: empty baseline, null model
+
+**Mean-Map Floor**:
+The score of predicting the average training Grid Map for every Window. A location prior with no context.
+_Avoid_: average baseline
+
+**Previous-Target Floor**:
+The score of predicting the Grid Map of the Step Pair before the Last Step (F7 → F8). "The same place changes again". Borrowed from DiT2VLM.
+_Avoid_: repeat baseline, copy-previous
