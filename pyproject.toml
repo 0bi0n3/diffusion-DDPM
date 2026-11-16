@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "changemap"
+version = "0.1.0"
+description = "Flow-matching Change Map generator (Grid Map on the 28x50 Token Grid)"
+requires-python = ">=3.10"
+dependencies = ["torch", "numpy", "scipy"]
+
+[project.scripts]
+changemap = "changemap.cli:main"
+
+[tool.setuptools]
+packages = ["changemap"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

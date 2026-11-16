@@ -129,3 +129,9 @@ dmypy.json
 .pyre/
 
 .idea
+
+# changemap run outputs
+runs/
+changemap.egg-info/
+__pycache__/
+.pytest_cache/
