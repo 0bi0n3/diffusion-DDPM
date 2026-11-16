@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import metrics, panels, report, targets
+from . import metrics, panels, report, targets, tokens
 from .data import load_windows
 
 NO_PREVIOUS_RULE = "A Window with no previous Step Pair (absent or dropped) is scored as all black."
@@ -33,7 +33,7 @@ def _row(kind, pw, windows, higher_better) -> dict:
                            for i, w in enumerate(windows)}}
 
 
-def _comparisons(values: dict, arms: list, tg) -> list:
+def _comparisons(values: dict, arms: list, tg, compare_metrics=None) -> list:
     """values[name] = {"single": {metric: (n,)}, "best_of_k": {...}}."""
     pairs = []
     for a in arms:
@@ -44,7 +44,7 @@ def _comparisons(values: dict, arms: list, tg) -> list:
     pairs += [(f"{a}:best_of_k", f"{a}:single") for a in arms]
     out = []
     for a, b in pairs:
-        for metric in tg.compare_metrics:
+        for metric in compare_metrics or tg.compare_metrics:
             va, vb = (values[x.split(":")[0]][x.split(":")[1]][metric] for x in (a, b))
             boot = metrics.paired_bootstrap(va - vb)
             if boot is not None:
@@ -54,8 +54,18 @@ def _comparisons(values: dict, arms: list, tg) -> list:
 
 
 def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None, device: str = "cpu",
-          batch: int = 4, panel_windows: int = PANEL_WINDOWS, target: str = targets.DEFAULT) -> dict:
+          batch: int = 4, panel_windows: int = PANEL_WINDOWS, target: str = targets.DEFAULT,
+          token_metrics: bool | None = None, encoder: str = "dinov3", encoder_device: str = "cpu",
+          latent_stats=None) -> dict:
     tg = targets.get(target)
+    if token_metrics is None:
+        token_metrics = tg.name == "masked_frame"
+    if token_metrics and tg.name != "masked_frame":
+        raise ValueError(f"--token-metrics on is not available for target {tg.name!r} (only masked_frame)")
+    enc = tokens.load_encoder(encoder, encoder_device) if token_metrics else None
+    stats = tokens.load_stats(latent_stats) if token_metrics else None
+    higher_better = tg.higher_better | (tokens.HIGHER_BETTER if token_metrics else frozenset())
+    compare_metrics = tg.compare_metrics + (("region_token_cosine",) if token_metrics else ())
     windows = load_windows(tier, split, verdict)
     ids = [w.id for w in windows]
     truth = tg.truths(tier, split, windows, verdict)
@@ -72,15 +82,20 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
         arm_maps[str(z["arm"])] = {key: z[key] for key in tg.sample_keys}
     arm_maps = dict(sorted(arm_maps.items(), key=lambda kv: (ARM_ORDER.index(kv[0]) if kv[0] in ARM_ORDER else 99, kv[0])))
     n = len(windows)
+    if token_metrics:
+        true_tok = tokens.true_tokens(tier, split, enc, ids, truth["rgb"])
+        region = truth["grid"] > 0
     floor_maps = tg.floors(tier, split, windows, truth)
     n_no_previous = sum(not w.has_previous for w in windows)
     rows, values, per_arm = {}, {}, {}
     for kind, group in (("arm", arm_maps), ("floor", floor_maps)):
         for name, smp in group.items():
             pw = tg.score_samples(smp, truth, windows, model, batch, device)
-            rows[name] = _row(kind, pw, windows, tg.higher_better)
+            if token_metrics:
+                pw.update(tokens.score_samples(enc, true_tok, region, smp["rgb"], smp["mask"], stats))
+            rows[name] = _row(kind, pw, windows, higher_better)
             values[name] = {"single": {m: metrics.mean_ignoring_nan(pw[m], axis=1) for m in pw},
-                            "best_of_k": {m: metrics.best_of_k(pw[m], m in tg.higher_better) for m in pw}}
+                            "best_of_k": {m: metrics.best_of_k(pw[m], m in higher_better) for m in pw}}
             if kind == "arm":
                 per_arm[name] = {"samples": smp, "pw": pw}
     if "previous_target_floor" in rows:
@@ -96,7 +111,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
            "lpips": {"module": getattr(model, "__module__", type(model).__module__), "upscale": tg.upscale,
                      "weights_dir": str(lpips_dir) if lpips_dir else None},
            "caveats": [report.CAPTION_LEAK, report.LPIPS_CAVEAT], "panel_windows": panel_ids,
-           "rows": rows, "comparisons": _comparisons(values, list(arm_maps), tg)}
+           "rows": rows, "comparisons": _comparisons(values, list(arm_maps), tg, compare_metrics)}
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(rep, indent=1) + "\n")
     (out / "report.md").write_text(report.render(rep))

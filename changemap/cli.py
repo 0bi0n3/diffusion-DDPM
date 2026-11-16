@@ -5,9 +5,24 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import targets
+from . import targets, tokens
 
 DEVICE_HELP = "torch device (default cpu; use cuda only for cluster jobs)"
+
+
+def token_options(s) -> None:
+    s.add_argument("--token-metrics", choices=("on", "off"), default=None,
+                   help="token-space scoring (default: on for masked_frame; refused for grid_map)")
+    s.add_argument("--encoder", choices=tokens.KINDS, default="dinov3",
+                   help="frozen encoder for token metrics: the DiT study's DINOv3 path, or its stand-in")
+    s.add_argument("--encoder-device", default="cpu", help="torch device of the encoder (default cpu)")
+    s.add_argument("--latent-stats", type=Path,
+                   help="the DiT study's stats.npz (mean, std); token MSE is raw tokens without it")
+
+
+def token_kwargs(a) -> dict:
+    return {"token_metrics": None if a.token_metrics is None else a.token_metrics == "on", "encoder": a.encoder,
+            "encoder_device": a.encoder_device, "latent_stats": a.latent_stats}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -53,6 +68,7 @@ def _parser() -> argparse.ArgumentParser:
     c.add_argument("--out", required=True, type=Path)
     c.add_argument("--lpips-dir", type=Path, help="folder with vgg16-397923af.pth and vgg.pth (env CHANGEMAP_LPIPS_DIR)")
     c.add_argument("--device", default="cpu", help=DEVICE_HELP)
+    token_options(c)
 
     r = sub.add_parser("run")
     common(r, True)
@@ -69,6 +85,7 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--seed", type=int, default=35)
     r.add_argument("--lpips-dir", type=Path, help="folder with the LPIPS weights (env CHANGEMAP_LPIPS_DIR)")
     r.add_argument("--device", default="cpu", help=DEVICE_HELP)
+    token_options(r)
     return p
 
 
@@ -90,7 +107,8 @@ def main(argv=None) -> int:
         elif a.cmd == "sample":
             sample_mod.sample(a.run, a.tier, a.split, a.k, a.steps, a.seed, a.out, a.verdict, a.device, target=a.target)
         elif a.cmd == "score":
-            score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target)
+            score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target,
+                            **token_kwargs(a))
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
@@ -102,7 +120,7 @@ def main(argv=None) -> int:
                 samples.append(sample_mod.sample(run, a.tier, a.split, a.k, a.sample_steps, a.seed,
                                                  a.out / "samples" / arm, a.verdict, a.device, target=a.target))
             score_mod.score(samples, a.tier, a.split, a.out / "report", a.verdict, a.lpips_dir, a.device,
-                            target=a.target)
+                            target=a.target, **token_kwargs(a))
     except (PermissionError, ValueError, FileNotFoundError) as e:
         p.exit(2, f"changemap: error: {e}\n")
     return 0
