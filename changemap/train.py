@@ -101,9 +101,10 @@ def _ctx(ctx, idx):
 
 @torch.no_grad()
 def validate(ema_model, val_x, val_ctx, val_ids, val_maps, shift, seed, opts, device, autocast_cfg,
-             target=targets.get(targets.DEFAULT)) -> dict:
+             target=None) -> dict:
     """Flow-matching loss of the EMA on the fixed val subset (fixed noise and times), and the Grid Map pixel MSE of a
     few EMA samples against their true Grid Maps. No boxes and no IoU."""
+    target = target or targets.get(targets.DEFAULT)
     ema_model.eval()
     g = torch.Generator().manual_seed(seed + 1)
     total = 0.0
@@ -114,7 +115,7 @@ def validate(ema_model, val_x, val_ctx, val_ids, val_maps, shift, seed, opts, de
             pred = ema_model(xt, t, _ctx(val_ctx, slice(i, i + 32)))
         total += float(transport.velocity_loss(pred.float(), ut)) * len(x0)
     n = min(opts.val_samples, len(val_ids))
-    noise = transport.window_noise(val_ids[:n], (*GRID, target.channels), seed).to(device)
+    noise = transport.window_noise(val_ids[:n], target.shape, seed).to(device)
     x = transport.sample_euler(ema_model, noise, _ctx(val_ctx, slice(0, n)), opts.val_sample_steps, shift)
     mse = float(np.mean((target.decode(x.cpu().numpy()) - val_maps[:n]) ** 2))
     return {"val_loss": total / len(val_x), "val_grid_mse": mse}
@@ -129,7 +130,7 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
     out.mkdir(parents=True, exist_ok=True)
     windows = load_windows(tier, "train")
     config = {"target": tg.name, "arm": arm, "steps": steps, "batch": batch, "lr": lr, "hidden": hidden, "depth": depth, "heads": heads,
-              "seed": seed, "shift": transport.time_shift((*GRID, tg.channels)), "tier": str(tier),
+              "seed": seed, "shift": transport.time_shift(tg.shape), "tier": str(tier),
               "n_train_windows": len(windows), "device": device, "ema_decay": opts.ema_decay, "warmup": opts.warmup,
               "amp": opts.amp, "val_every": opts.val_every, "val_n": opts.val_n,
               "val_sample_steps": opts.val_sample_steps}

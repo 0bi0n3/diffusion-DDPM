@@ -64,7 +64,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     arm_maps = {}
     for path in samples:
         z = np.load(path)
-        targets.check(tg.name, str(z["target"]) if "target" in z.files else None, f"samples {path}")
+        targets.require_same_target(tg.name, str(z["target"]) if "target" in z.files else None, f"samples {path}")
         if list(z["ids"]) != ids:
             raise ValueError(f"{path}: Window ids differ from the {split} split")
         arm_maps[str(z["arm"])] = z["maps"]

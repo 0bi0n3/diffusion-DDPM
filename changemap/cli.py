@@ -86,7 +86,7 @@ def main(argv=None) -> int:
     try:
         if a.cmd == "train":
             train_mod.train(a.tier, a.arm, a.steps, a.out, a.batch, a.lr, a.hidden, a.depth, a.heads, a.seed, a.device,
-                            train_mod.options_from(a), a.target)
+                            train_mod.options_from(a), target=a.target)
         elif a.cmd == "sample":
             sample_mod.sample(a.run, a.tier, a.split, a.k, a.steps, a.seed, a.out, a.verdict, a.device, target=a.target)
         elif a.cmd == "score":

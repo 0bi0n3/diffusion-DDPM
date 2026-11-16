@@ -21,6 +21,11 @@ class GridMapTarget:
     name = "grid_map"
     channels = 1
 
+    @property
+    def shape(self) -> tuple:
+        """One Window's training tensor shape: (28, 50, channels)."""
+        return (*GRID, self.channels)
+
     def tensor(self, window) -> np.ndarray:
         """(28, 50, 1) in [-1, 1]."""
         return to_model_range(window.grid_map)
@@ -47,13 +52,13 @@ class GridMapTarget:
 TARGETS = {t.name: t for t in (GridMapTarget(),)}
 
 
-def get(name: str):
+def get(name: str) -> GridMapTarget:
     if name not in TARGETS:
         raise ValueError(f"unknown target {name!r}: choose from {tuple(TARGETS)}")
     return TARGETS[name]
 
 
-def check(expected: str, found: str | None, what) -> None:
+def require_same_target(expected: str, found: str | None, what) -> None:
     """Refuse a run or samples file made for another target. A missing record means a run made before targets
     existed, which can only be a Grid Map run."""
     found = found or DEFAULT

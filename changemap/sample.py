@@ -20,18 +20,20 @@ def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: b
     Sample j of a Window starts from `window_noise` seeded seed + j: per Window and reproducible."""
     run = Path(run)
     cfg = json.loads((run / "config.json").read_text())
-    targets.check(target, cfg.get("target"), f"run {run}")
+    targets.require_same_target(target, cfg.get("target"), f"run {run}")
     tg = targets.get(target)
     windows = load_windows(tier, split, verdict)
     model = build_model(cfg["arm"], cfg["hidden"], cfg["depth"], cfg["heads"], tg.channels)
     model.load_state_dict(torch.load(run / "model.pt", map_location="cpu"))
     model.to(device).eval()
     ids = [w.id for w in windows]
+    if not ids or k < 1:
+        raise ValueError(f"nothing to sample: {len(ids)} Windows, k = {k}")
     ctx = [torch.from_numpy(a) for a in load_context(tier, split, ids, verdict)] if uses_context(cfg["arm"]) else None
     maps = None
     for j in range(k):
         for i in range(0, len(ids), batch):
-            noise = transport.window_noise(ids[i:i + batch], (*GRID, tg.channels), seed + j).to(device)
+            noise = transport.window_noise(ids[i:i + batch], tg.shape, seed + j).to(device)
             x = transport.sample_euler(model, noise, (ctx[0][i:i + batch].to(device), ctx[1][i:i + batch].to(device)) if ctx else None, steps, cfg["shift"])
             y = tg.decode(x.cpu().numpy())
             if maps is None:
