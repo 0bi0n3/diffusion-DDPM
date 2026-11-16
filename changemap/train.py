@@ -5,7 +5,7 @@ Files in `out`:
   last.pt        the full training state (model, ema, optimiser, noise generator, log, counters); written every
                  `ckpt_every` steps and whenever the run stops. `train` resumes from it when it exists.
   model.pt       the EMA weights alone (a plain state dict): what `sample` loads. Sampling therefore uses the EMA.
-  config.json    the config; `log.json`  {"train": [{step, loss, lr}], "validation": [{step, val_loss, val_grid_mse}]};
+  config.json    the config; `log.json`  {"train": [{step, loss, lr}], "validation": [{step, val_loss, val_mse}]};
   run_record.json  see runrecord.py.
 Resume is bit-exact on CPU: a run stopped and resumed ends with the same weights as an uninterrupted run.
 """
@@ -43,7 +43,7 @@ class TrainOptions:
     amp: str = "auto"                 # auto: bf16 on a CUDA device that has it; bf16; off
     val_every: int = 1000
     val_n: int = 100                  # fixed seeded val subset
-    val_sample_steps: int = 10        # Euler steps of the few EMA samples scored by Grid Map pixel MSE
+    val_sample_steps: int = 10        # Euler steps of the few EMA samples scored by the target's full-frame MSE
     val_samples: int = 4
     ckpt_every: int = 1000
     log_every: int = 10               # W&B only; log.json has every step
@@ -100,10 +100,10 @@ def _ctx(ctx, idx):
 
 
 @torch.no_grad()
-def validate(ema_model, val_x, val_ctx, val_ids, val_maps, shift, seed, opts, device, autocast_cfg,
+def validate(ema_model, val_x, val_ctx, val_ids, val_truth, shift, seed, opts, device, autocast_cfg,
              target=None) -> dict:
-    """Flow-matching loss of the EMA on the fixed val subset (fixed noise and times), and the Grid Map pixel MSE of a
-    few EMA samples against their true Grid Maps. No boxes and no IoU."""
+    """Flow-matching loss of the EMA on the fixed val subset (fixed noise and times), and the target's full-frame MSE
+    (`val_mse`) of a few EMA samples against their truth. No boxes and no IoU."""
     target = target or targets.get(targets.DEFAULT)
     ema_model.eval()
     g = torch.Generator().manual_seed(seed + 1)
@@ -117,8 +117,8 @@ def validate(ema_model, val_x, val_ctx, val_ids, val_maps, shift, seed, opts, de
     n = min(opts.val_samples, len(val_ids))
     noise = transport.window_noise(val_ids[:n], target.shape, seed).to(device)
     x = transport.sample_euler(ema_model, noise, _ctx(val_ctx, slice(0, n)), opts.val_sample_steps, shift)
-    mse = float(np.mean((target.decode(x.cpu().numpy()) - val_maps[:n]) ** 2))
-    return {"val_loss": total / len(val_x), "val_grid_mse": mse}
+    mse = target.validation_mse(target.decode(x.cpu().numpy()), {k: v[:n] for k, v in val_truth.items()})
+    return {"val_loss": total / len(val_x), "val_mse": mse}
 
 
 def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hidden: int = 384, depth: int = 12,
@@ -167,14 +167,14 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
     bf16 = opts.amp == "bf16" or (opts.amp == "auto" and use_cuda and torch.cuda.is_bf16_supported())
     ac = dict(device_type=device.split(":")[0], dtype=torch.bfloat16, enabled=bf16)
 
-    data = torch.from_numpy(np.stack([tg.tensor(w) for w in windows])).to(device)
+    data = torch.from_numpy(tg.tensors(tier, "train", windows)).to(device)
     ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "train", [w.id for w in windows])] \
         if uses_context(arm) else None
     val = load_windows(tier, "val")
     keep = sorted(np.random.default_rng(seed).permutation(len(val))[:opts.val_n])
     val = [val[i] for i in keep]
-    val_x = torch.from_numpy(np.stack([tg.tensor(w) for w in val])).to(device)
-    val_ids, val_maps = [w.id for w in val], np.stack([tg.truth(w) for w in val])
+    val_x = torch.from_numpy(tg.tensors(tier, "val", val)).to(device)
+    val_ids, val_truth = [w.id for w in val], tg.truths(tier, "val", val)
     val_ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "val", val_ids)] if uses_context(arm) else None
 
     wb = RunLog.open(opts.wandb_mode, opts.wandb_project, opts.run_name or out.name, config, out)
@@ -224,9 +224,9 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
             if step % opts.log_every == 0 or step == steps:
                 wb.train(step, float(loss), step_lr)
             if (opts.val_every and step % opts.val_every == 0) or step == steps:
-                v = validate(ema.module, val_x, val_ctx, val_ids, val_maps, shift, seed, opts, device, ac, tg)
+                v = validate(ema.module, val_x, val_ctx, val_ids, val_truth, shift, seed, opts, device, ac, tg)
                 log["validation"].append({"step": step, **v})
-                wb.validation(step, v["val_loss"], v["val_grid_mse"])
+                wb.validation(step, v["val_loss"], v["val_mse"])
             if opts.ckpt_every and step % opts.ckpt_every == 0 and step < steps:
                 checkpoint("running")
         status = "finished" if step >= steps else "interrupted"

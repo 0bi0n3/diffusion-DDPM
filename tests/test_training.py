@@ -7,7 +7,7 @@ import sys
 import pytest
 import torch
 
-from changemap.cli import main
+from grid import main
 from fake_wandb import FakeWandb
 
 REGION = [[100.0, 100.0, 500.0, 400.0]]
@@ -94,7 +94,7 @@ def test_validation_entries_at_the_interval(tier, tmp_path):
     val = json.loads((out / "log.json").read_text())["validation"]
     assert [e["step"] for e in val] == [3, 6, 7]                  # every 3 steps, and the last step
     for e in val:
-        assert e["val_loss"] > 0 and 0 <= e["val_grid_mse"] <= 1
+        assert e["val_loss"] > 0 and 0 <= e["val_mse"] <= 1
         assert not any("iou" in k.lower() for k in e)             # no matched mIoU: the scoring metric moved on
 
 
@@ -147,7 +147,7 @@ def test_wandb_logging_with_fake(tier, tmp_path, monkeypatch):
     steps = [d["step"] for d in fake.logged if "train/loss" in d]
     assert steps == [1, 2, 3, 4]                                  # never twice
     val = [d for d in fake.logged if "val/loss" in d]
-    assert [d["step"] for d in val] == [2, 4] and all("val/grid_mse" in d for d in val)
+    assert [d["step"] for d in val] == [2, 4] and all("val/mse" in d for d in val)
     assert fake.finished == 2
 
 

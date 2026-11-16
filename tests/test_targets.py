@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 import torch
 
-from changemap.cli import main
+from changemap.cli import main as cli_main
+from grid import main
 from test_end_to_end import run_pipeline, tier  # noqa: F401  (fixture)
 
 

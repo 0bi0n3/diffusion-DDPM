@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from changemap.cli import main
+from grid import main
 
 SQ_W, SQ_H = 1920 / 50, 1080 / 28
 
