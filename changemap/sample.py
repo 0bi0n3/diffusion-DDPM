@@ -9,8 +9,8 @@ import torch
 from . import siblings  # noqa: F401
 from latentdit import transport  # noqa: E402
 
-from .data import GRID, from_model_range, load_windows
-from .model import build_model, empty_context
+from .data import GRID, from_model_range, load_context, load_windows
+from .model import build_model, uses_context
 
 
 def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: bool = False,
@@ -24,11 +24,12 @@ def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: b
     model.load_state_dict(torch.load(run / "model.pt", map_location="cpu"))
     model.to(device).eval()
     ids = [w.id for w in windows]
+    ctx = [torch.from_numpy(a) for a in load_context(tier, split, ids, verdict)] if uses_context(cfg["arm"]) else None
     maps = np.zeros((len(ids), k, *GRID), np.float32)
     for j in range(k):
         for i in range(0, len(ids), batch):
             noise = transport.window_noise(ids[i:i + batch], (*GRID, 1), seed + j).to(device)
-            x = transport.sample_euler(model, noise, empty_context(len(noise), device), steps, cfg["shift"])
+            x = transport.sample_euler(model, noise, (ctx[0][i:i + batch].to(device), ctx[1][i:i + batch].to(device)) if ctx else None, steps, cfg["shift"])
             maps[i:i + batch, j] = from_model_range(x.cpu().numpy())
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)

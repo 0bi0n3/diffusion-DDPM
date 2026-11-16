@@ -132,7 +132,7 @@ def test_test_split_refused_without_verdict(tier, tmp_path):
 
 def test_unknown_arm_refused(tier, tmp_path):
     with pytest.raises(SystemExit) as e:
-        main(["train", "--tier", str(tier), "--arm", "frame_caption", "--steps", "1", "--out", str(tmp_path / "r")])
+        main(["train", "--tier", str(tier), "--arm", "bogus_arm", "--steps", "1", "--out", str(tmp_path / "r")])
     assert e.value.code not in (0, None)
 
 
