@@ -1,4 +1,12 @@
-"""Windows of a scaling tier: rows of `<split>_targets.jsonl` turned into Grid Map targets."""
+"""Windows of a scaling tier: rows of `<split>_targets.jsonl` turned into Grid Map targets.
+
+Per-Window context (Conditioning Arms other than Unconditional) lives beside the targets, one file per split:
+`<tier>/<split>_context.npz` with arrays aligned on the first axis (ticket #3 builds the real cache in this format)
+  ids      (n,)             Window id strings; may include Dropped Pairs and extra Windows (looked up by id)
+  f8       (n, 28, 50, 768) Previous Frame DINOv3 tokens, already normalised (float16 or float32)
+  caption  (n, 77, 768)     Caption CLIP ViT-L/14 text tokens (float16 or float32)
+The Unconditional arm never opens these files.
+"""
 from __future__ import annotations
 
 import json
@@ -62,3 +70,19 @@ def to_model_range(grid_map: np.ndarray) -> np.ndarray:
 def from_model_range(x) -> np.ndarray:
     """(..., 28, 50, 1) in about [-1, 1] -> (..., 28, 50) clipped to [0, 1]."""
     return np.clip((np.asarray(x)[..., 0] + 1) / 2, 0, 1)
+
+
+def load_context(tier, split: str, ids, verdict: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """(f8 (n, 28, 50, 768), caption (n, 77, 768)) float32, rows in the order of `ids`."""
+    if split == TEST and not verdict:
+        raise PermissionError("the test split is read only for a verdict: pass --verdict")
+    path = Path(tier) / f"{split}_context.npz"
+    if not path.exists():
+        raise ValueError(f"{path} not found: Conditioning Arms that read context need it (format: see changemap.data)")
+    z = np.load(path)
+    row = {str(i): j for j, i in enumerate(z["ids"])}
+    missing = [i for i in ids if i not in row]
+    if missing:
+        raise ValueError(f"{path} has no context for Windows {missing[:3]}")
+    idx = [row[i] for i in ids]
+    return z["f8"][idx].astype(np.float32), z["caption"][idx].astype(np.float32)
