@@ -41,6 +41,10 @@ _Avoid_: prompt, description, context
 One of four models trained alike that differ only in context: Unconditional, Caption-only, Frame-only (Previous Frame), Frame+Caption.
 _Avoid_: ablation, variant
 
+**Target**:
+What the model generates for a Window, chosen by name (`grid_map` today) and recorded with every run, samples file and report, so a run is never scored as another target.
+_Avoid_: output type, mode
+
 **Grid Map**:
 The 28×50 coverage form of a Change Map: each Token Grid square holds the fraction of it covered by Significant Regions, in [0, 1] (scaled to [−1, 1] for training). The model's target and output.
 _Avoid_: heatmap, mask
