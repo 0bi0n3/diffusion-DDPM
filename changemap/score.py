@@ -1,10 +1,12 @@
-"""Matched mIoU of boxes read from Grid Maps, against Significant Regions.
+"""Matched mean IoU of boxes read from Grid Maps, against Significant Regions (DiT2VLM's definition, `multibox.py`).
 
-Rule (one Window): boxes are read from a map by `ceiling.map_boxes(map, "half")`. Predicted and true boxes are paired
-one to one by the assignment that maximises total IoU (`scoring.iou` of `change_regions`); the Window's score is
-the sum of the paired IoUs divided by max(#predicted, #true), so a missed region and a spurious box both cost.
-A No Change Window (no Significant Region) scores 1.0 if the prediction has no box, else 0.0, as
-`change_regions.scoring.no_change_correct` does. Per arm: mean over the k samples of a Window, then mean over Windows.
+Boxes are read from a map by `ceiling.map_boxes(map, "half")`. Per Window: one-to-one Hungarian matching of boxes to
+Significant Regions maximising total IoU (no cutoff); terms = (sum of matched IoU, boxes + regions - matched pairs).
+Pooled over Windows: sum of numerators / sum of denominators. A No Change Window with no box adds nothing; a box on a
+No Change Window adds to the denominator. With k samples, each sample index j is pooled over Windows on its own and the
+row reports the mean over j (per-sample values and per-Window terms are kept for a later bootstrap).
+No Change accuracy is separate: the share of No Change Windows whose prediction has no box
+(`change_regions.scoring.no_change_correct`: an empty answer is correct).
 """
 from __future__ import annotations
 
@@ -12,31 +14,37 @@ import json
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
 
 from . import siblings  # noqa: F401
 from dit2vlm import ceiling  # noqa: E402
-from change_regions import scoring  # noqa: E402
 
 from .data import load_windows
+from .multibox import pooled, window_terms
 
 THRESHOLD = "half"
-RULE = ("matched mIoU: boxes = map_boxes(map, 'half'); one-to-one assignment maximising total IoU; score = sum of "
-        "matched IoU / max(n_pred, n_true). No Change Window: 1.0 if the prediction has no box, else 0.0.")
+RULE = ("matched mean IoU (DiT2VLM multibox_score): boxes = map_boxes(map, 'half'); per Window a one-to-one "
+        "Hungarian matching maximising IoU, terms = (sum matched IoU, boxes + regions - matched); pooled over Windows "
+        "= sum numerators / sum denominators; with k samples, pooled per sample index then averaged over the k. "
+        "A No Change Window with no box adds nothing; a box on it adds to the denominator. "
+        "No Change accuracy is reported apart: share of No Change Windows whose prediction has no box.")
 
 
-def matched_miou(pred, true) -> float:
-    if not true:
-        return 1.0 if not pred else 0.0
-    if not pred:
-        return 0.0
-    iou = np.array([[scoring.iou(tuple(p), tuple(t)) for t in true] for p in pred])
-    r, c = linear_sum_assignment(-iou)
-    return float(iou[r, c].sum() / max(len(pred), len(true)))
+def window_boxes(pred_map) -> list:
+    return ceiling.map_boxes(pred_map, THRESHOLD)
 
 
-def window_score(pred_map, regions) -> float:
-    return matched_miou(ceiling.map_boxes(pred_map, THRESHOLD), list(regions))
+def _row(maps_per_window, windows) -> dict:
+    """maps_per_window[i]: (k, 28, 50) maps of Window i."""
+    k = len(maps_per_window[0])
+    boxes = [[window_boxes(m) for m in maps] for maps in maps_per_window]          # [window][sample]
+    terms = [[window_terms(boxes[i][j], w.regions) for j in range(k)] for i, w in enumerate(windows)]
+    per_sample = [pooled([terms[i][j] for i in range(len(windows))]) for j in range(k)]
+    nc = [i for i, w in enumerate(windows) if w.no_change]
+    nc_acc = [float(np.mean([not boxes[i][j] for i in nc])) for j in range(k)] if nc else None
+    return {"k": k, "matched_miou": float(np.mean(per_sample)), "per_sample_miou": per_sample,
+            "no_change_accuracy": float(np.mean(nc_acc)) if nc else None,
+            "boxes_per_window": float(np.mean([len(b) for bw in boxes for b in bw])),
+            "terms": {w.id: [list(t) for t in terms[i]] for i, w in enumerate(windows)}}
 
 
 def score(samples, tier, split: str, out, verdict: bool = False) -> dict:
@@ -47,12 +55,9 @@ def score(samples, tier, split: str, out, verdict: bool = False) -> dict:
         z = np.load(path)
         if list(z["ids"]) != ids:
             raise ValueError(f"{path}: Window ids differ from the {split} split")
-        rows[str(z["arm"])] = {"k": int(z["maps"].shape[1]), "per_window": {
-            w.id: float(np.mean([window_score(m, w.regions) for m in z["maps"][i]])) for i, w in enumerate(windows)}}
-    rows["all_black_floor"] = {"per_window": {w.id: window_score(np.zeros((28, 50)), w.regions) for w in windows}}
-    rows["oracle"] = {"per_window": {w.id: window_score(w.grid_map, w.regions) for w in windows}}
-    for r in rows.values():
-        r["matched_miou"] = float(np.mean(list(r["per_window"].values())))
+        rows[str(z["arm"])] = _row(z["maps"], windows)
+    rows["all_black_floor"] = _row([np.zeros((1, 28, 50))] * len(windows), windows)
+    rows["oracle"] = _row([w.grid_map[None] for w in windows], windows)
     report = {"split": split, "threshold": THRESHOLD, "scoring_rule": RULE, "n_windows": len(ids),
               "n_no_change": sum(w.no_change for w in windows), "window_ids": ids, "rows": rows}
     out = Path(out)

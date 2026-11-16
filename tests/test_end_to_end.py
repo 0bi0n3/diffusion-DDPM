@@ -65,13 +65,32 @@ def test_report_rows_and_window_ids(tier, tmp_path):
     assert rep["n_windows"] == 5 and rep["n_no_change"] == 1
     assert {"unconditional", "all_black_floor", "oracle"} <= set(rep["rows"])
     for r in rep["rows"].values():
-        assert sorted(r["per_window"]) == sorted(ids)   # identical Window ids on every row
-    # All-Black Floor: right only on the No Change Window; scoring rule is documented
-    assert rep["rows"]["all_black_floor"]["matched_miou"] == pytest.approx(1 / 5)
-    assert "No Change" in rep["scoring_rule"]
+        assert sorted(r["terms"]) == sorted(ids)        # identical Window ids on every row
+    black = rep["rows"]["all_black_floor"]
+    assert black["matched_miou"] == 0.0 and black["no_change_accuracy"] == 1.0 and black["boxes_per_window"] == 0.0
+    assert "No Change" in rep["scoring_rule"] and "pooled" in rep["scoring_rule"]
     # oracle: grid-aligned regions are recovered exactly by map_boxes at "half"
     assert rep["rows"]["oracle"]["matched_miou"] == pytest.approx(1.0)
-    assert 0 <= rep["rows"]["unconditional"]["matched_miou"] <= 1
+    assert rep["rows"]["oracle"]["no_change_accuracy"] == 1.0
+    u = rep["rows"]["unconditional"]
+    assert len(u["per_sample_miou"]) == 2 and u["matched_miou"] == pytest.approx(np.mean(u["per_sample_miou"]))
+    assert all(len(v) == 2 for v in u["terms"].values())      # per-Window terms kept per sample
+    assert 0 <= u["matched_miou"] <= 1 and 0 <= u["no_change_accuracy"] <= 1
+
+
+def test_pooled_formula_by_hand():
+    from changemap.multibox import pooled, window_terms
+    exact = window_terms([(0, 0, 2, 1)], [(0, 0, 2, 1)])                     # (1, 1)
+    half = window_terms([(0, 0, 2, 1)], [(1, 0, 3, 1)])                      # IoU 1/3: (1/3, 1)
+    false_alarm = window_terms([(0, 0, 1, 1)], [])                           # No Change Window with a box: (0, 1)
+    quiet = window_terms([], [])                                             # No Change Window, no box: (0, 0)
+    miss = window_terms([], [(0, 0, 1, 1), (2, 2, 3, 3)])                    # (0, 2)
+    assert exact == (1.0, 1) and quiet == (0.0, 0) and false_alarm == (0.0, 1) and miss == (0.0, 2)
+    assert half[0] == pytest.approx(1 / 3) and half[1] == 1
+    assert pooled([exact, half, false_alarm, quiet]) == pytest.approx((1 + 1 / 3) / 3)
+    assert pooled([quiet]) is None
+    # 2 predicted vs 1 true: one pair matched, denominator 2 + 1 - 1 = 2
+    assert window_terms([(0, 0, 2, 1), (5, 5, 6, 6)], [(0, 0, 2, 1)]) == (1.0, 2)
 
 
 def test_oracle_matches_map_boxes_directly(tier, tmp_path):
@@ -81,7 +100,7 @@ def test_oracle_matches_map_boxes_directly(tier, tmp_path):
     for wid, regions in (("t1_10", VAL[0]["regions"]), ("t1_50", VAL[4]["regions"][:1])):
         boxes = ceiling.map_boxes(hints.change_map(regions, (28, 50)), "half")
         assert np.allclose(boxes, regions, atol=1e-6)
-        assert rep["rows"]["oracle"]["per_window"][wid] == pytest.approx(1.0)
+        assert rep["rows"]["oracle"]["terms"][wid] == [[1.0, 1]]
 
 
 def test_same_seed_same_samples_different_seed_differs(tier, tmp_path):
