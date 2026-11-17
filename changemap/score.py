@@ -53,6 +53,25 @@ def _comparisons(values: dict, arms: list, tg, compare_metrics=None) -> list:
     return out
 
 
+def hypothesis_readings(comparisons: list) -> list:
+    """Per hypothesis (H1-H5) that has both: the pixel reading (Region LPIPS, supported when the upper bound is < 0) and the
+    token reading (Region Token Cosine, higher is better: supported when the lower bound is > 0), and whether they
+    disagree. Flagged, never resolved."""
+    by = {}
+    for c in comparisons:
+        if "hypothesis" in c and c["metric"] in ("region_lpips", "region_token_cosine"):
+            by.setdefault(c["hypothesis"], {})[c["metric"]] = c
+    out = []
+    for h in sorted(by):
+        pix, tok = by[h].get("region_lpips"), by[h].get("region_token_cosine")
+        if pix is None or tok is None:
+            continue
+        ps, ts = pix["ci_hi"] < 0, tok["ci_lo"] > 0
+        out.append({"hypothesis": h, "a": pix["a"], "b": pix["b"], "pixel_ci_hi": pix["ci_hi"], "pixel_supported": bool(ps),
+                    "token_ci_lo": tok["ci_lo"], "token_supported": bool(ts), "disagree": bool(ps != ts)})
+    return out
+
+
 def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None, device: str = "cpu",
           batch: int = 4, panel_windows: int = PANEL_WINDOWS, target: str = targets.DEFAULT,
           token_metrics: bool | None = None, encoder: str = "dinov3", encoder_device: str = "cpu",
@@ -106,12 +125,17 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
            "k": max((m[tg.sample_keys[0]].shape[1] for m in arm_maps.values()), default=1),
            **({"n_no_previous": n_no_previous, "no_previous_rule": getattr(tg, "no_previous_rule", NO_PREVIOUS_RULE)}
               if "previous_target_floor" in tg.floor_names else {}),
+           **({"tokens": {"encoder": {"kind": encoder, "id": enc.id, "revision": enc.revision, "device": encoder_device},
+                          "latent_stats": str(latent_stats) if latent_stats else None, "normalised": stats is not None,
+                          "cache": str(tokens.cache_path(tier, split, enc))}} if token_metrics else {}),
            **({"metric_groups": tg.groups} if hasattr(tg, "groups") else {}),
            "bootstrap": {"resamples": metrics.RESAMPLES, "seed": metrics.BOOTSTRAP_SEED},
            "lpips": {"module": getattr(model, "__module__", type(model).__module__), "upscale": tg.upscale,
                      "weights_dir": str(lpips_dir) if lpips_dir else None},
            "caveats": [report.CAPTION_LEAK, report.LPIPS_CAVEAT], "panel_windows": panel_ids,
            "rows": rows, "comparisons": _comparisons(values, list(arm_maps), tg, compare_metrics)}
+    if token_metrics:
+        rep["hypothesis_readings"] = hypothesis_readings(rep["comparisons"])
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(rep, indent=1) + "\n")
     (out / "report.md").write_text(report.render(rep))

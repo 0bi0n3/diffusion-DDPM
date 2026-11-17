@@ -112,6 +112,8 @@ def main(argv=None) -> int:
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
+            if a.target != "masked_frame" and a.token_metrics == "on":
+                raise ValueError(f"--token-metrics on is not available for target {a.target!r} (only masked_frame)")
             samples = []
             for arm in a.arms:
                 run = a.out / "runs" / arm
