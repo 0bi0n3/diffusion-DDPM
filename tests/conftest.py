@@ -20,3 +20,12 @@ def fake_encoder(monkeypatch):
     fe.reset()
     monkeypatch.setenv("CHANGEMAP_ENCODER_MODULE", "fake_encoder")
     return fe
+
+
+@pytest.fixture(autouse=True)
+def fake_clip(monkeypatch):
+    """Captions go through the tiny stand-in in tests/fake_clip.py; the CLIP weights are never loaded."""
+    import fake_clip as fc
+    fc.reset()
+    monkeypatch.setenv("CHANGEMAP_CLIP_MODULE", "fake_clip")
+    return fc

@@ -1,4 +1,4 @@
-"""`changemap train | sample | score | run | frames`: the one seam."""
+"""`changemap train | sample | score | run | frames | context | previous`: the one seam."""
 from __future__ import annotations
 
 import argparse
@@ -77,6 +77,22 @@ def _parser() -> argparse.ArgumentParser:
     f.add_argument("--out", required=True, type=Path)
     f.add_argument("--workers", type=int, default=4, help="decoding processes, one video each (default 4)")
 
+    for name, helptext in (("context", "write <out>/<split>_context.npz (F8 tokens, CLIP captions)"),
+                           ("previous", "write <out>/<split>_previous.jsonl (the F7 -> F8 Step Pair per Window)")):
+        x = sub.add_parser(name, help=helptext)
+        x.add_argument("--tier", required=True, type=Path)
+        x.add_argument("--split", choices=("train", "val", "test"), required=True)
+        x.add_argument("--verdict", action="store_true", help="allow reading the test split")
+        x.add_argument("--out", required=True, type=Path)
+        if name == "context":
+            x.add_argument("--store", action="append", required=True, type=Path,
+                           help="DiT study Frame Latent store folder (shards/t<T>/...); repeat, first hit wins")
+            x.add_argument("--stats", required=True, type=Path, help="the DiT study's stats.npz (mean, std)")
+            x.add_argument("--encoder", choices=tokens.KINDS, default="dinov3", help="encoder for Windows missing from the store")
+            x.add_argument("--max-fresh", type=int, default=50, help="most Windows encoded fresh (default 50)")
+            x.add_argument("--device", default="cpu", help="torch device of the encoders (default cpu)")
+            x.add_argument("--verify-store", action="store_true", help="sha256 every shard read (slow: the store is large)")
+
     r = sub.add_parser("run")
     common(r, True)
     r.add_argument("--arms", nargs="+", default=["unconditional"])
@@ -117,6 +133,16 @@ def main(argv=None) -> int:
             from . import frames as frames_mod
             res = frames_mod.build_cache(a.tier, a.split, a.out, a.verdict, a.workers)
             print(f"{res['path']}: {res['n']} Windows, {len(res['missing'])} undecodable")
+        elif a.cmd == "context":
+            from . import context as context_mod
+            e = context_mod.build_context(a.tier, a.split, a.out, a.store, a.stats, a.verdict, a.encoder, a.device,
+                                          a.device, a.max_fresh, a.verify_store)
+            print(f"{a.split}: {e['windows']} Windows, {e['from_store']} from the store, {e['encoded_fresh']} encoded fresh")
+        elif a.cmd == "previous":
+            from . import context as context_mod
+            e = context_mod.build_previous(a.tier, a.split, a.out, a.verdict)
+            print(f"{a.split}: {e['windows']} Windows, {e['with_previous']} with a previous pair, "
+                  f"{e['dropped']} dropped, {e['none']} none")
         elif a.cmd == "score":
             score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target,
                             **token_kwargs(a))
