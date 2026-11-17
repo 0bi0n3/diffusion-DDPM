@@ -46,11 +46,13 @@ def load(device: str = "cpu"):
     """The real CLIP ViT-L/14 text encoder from the HF cache."""
     import torch
     from transformers import CLIPTextModel, CLIPTokenizer
-    tok, model = CLIPTokenizer.from_pretrained(CLIP_ID), CLIPTextModel.from_pretrained(CLIP_ID).to(device).eval()
+    from huggingface_hub import snapshot_download
+    revision = Path(snapshot_download(CLIP_ID, allow_patterns=["config.json"])).name      # the snapshot's commit hash
+    tok = CLIPTokenizer.from_pretrained(CLIP_ID, revision=revision)
+    model = CLIPTextModel.from_pretrained(CLIP_ID, revision=revision).to(device).eval()
 
     class ClipText:
         id = CLIP_ID
-        revision = getattr(model.config, "_commit_hash", None) or "unknown"
 
         def encode(self, texts):
             out = []
@@ -60,6 +62,7 @@ def load(device: str = "cpu"):
                               return_tensors="pt").input_ids.to(device)
                     out.append(model(input_ids=ids).last_hidden_state.float().cpu().numpy())
             return np.concatenate(out) if out else np.zeros((0, 77, 768), np.float32)
+    ClipText.revision = revision
     return ClipText()
 
 
