@@ -37,6 +37,8 @@ def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: b
             noise = transport.window_noise(ids[i:i + batch], tg.shape, seed + j).to(device)
             x = transport.sample_euler(model, noise, (ctx[0][i:i + batch].to(device), ctx[1][i:i + batch].to(device)) if ctx else None, steps, cfg["shift"])
             y = tg.decode(x.cpu().numpy())
+            if "mask" in y:
+                y["mask"] = y["mask"].astype(np.float16)       # half the size on disk (0.5 is exact); score casts back
             if out_arrays is None:
                 out_arrays = {key: np.zeros((len(ids), k, *v.shape[1:]), v.dtype) for key, v in y.items()}
             for key, v in y.items():

@@ -97,6 +97,7 @@ def test_masked_frame_train_sample_score_end_to_end(mtier, tmp_path):
     assert str(z["target"]) == "masked_frame"
     assert z["rgb"].shape == (5, 2, H, W, 3) and z["rgb"].dtype == np.uint8
     assert z["mask"].shape == (5, 2, H, W) and z["mask"].min() >= 0 and z["mask"].max() <= 1
+    assert z["mask"].dtype == np.float16                         # half the size on disk; 0.5 is exact in float16
     rep = score(mtier, tmp_path, [samples])
     assert rep["target"] == "masked_frame" and rep["window_ids"] == IDS
     assert list(rep["rows"]) == ["unconditional", *FLOORS]
@@ -314,3 +315,13 @@ def test_bootstrap_comparisons_for_h1_to_h5_and_report_labels(mtier, tmp_path):
     assert "H5" in md and "caption leak" in md.lower() and "LPIPS caveat" in md
     assert rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["psnr"] is not None or \
         rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["mse"] == 0
+
+
+
+def test_score_without_matplotlib_still_writes_the_report_and_says_panels_are_skipped(mtier, tmp_path, monkeypatch, capsys):
+    import sys
+    monkeypatch.setitem(sys.modules, "matplotlib", None)             # the container has no matplotlib: import raises
+    rep = score(mtier, tmp_path)
+    assert (tmp_path / "report" / "report.json").exists() and (tmp_path / "report" / "report.md").exists()
+    assert not list((tmp_path / "report").glob("panels/*.png"))
+    assert "panels skipped" in capsys.readouterr().err and rep["rows"]
