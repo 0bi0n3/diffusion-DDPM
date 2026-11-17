@@ -28,7 +28,18 @@ HYPOTHESES = ("Hypotheses (Region LPIPS; a hypothesis is supported when the uppe
               "Unconditional (read with the caption leak); H4 best-of-k vs single sample for Frame+Caption; H5 "
               "Frame+Caption vs the Copy-F8 Floor (does the model predict new content beyond copying the Previous Frame).")
 ROW_LABELS = {"copy_f8_floor": "copy_f8_floor (oracle location)"}
-HEADERS = {"lpips": "LPIPS", "mse": "MSE", "region_lpips": "Region LPIPS", "region_mse": "Region MSE",
+TOKEN_METHOD = ("Token-space scoring: generated and true Masked Frames are composited (RGB where the mask is on, 0 elsewhere), "
+                "upscaled bicubically x4 to 896x1600 and encoded by the same frozen encoder ({enc}), giving 28x50 tokens. "
+                "Token Cosine is the mean cosine over all 1,400 squares; Region Token Cosine is the same mean over the "
+                "squares that overlap a true region (n/a for No Change Windows); higher is better for both. Token MSE is "
+                "{mse}. Best of k takes the highest cosine and the lowest Token MSE. True-frame encodings are cached "
+                "({cache}).")
+TOKEN_MSE_NORMALISED = "computed after normalising tokens with the DiT study's latent stats ({stats})"
+TOKEN_MSE_RAW = "computed on unnormalised tokens (no --latent-stats given), so it is not comparable with the DiT study's normalised MSE"
+TOKEN_HYPOTHESES = ("Token-space reading of H1 to H5 (secondary): each is also compared on Region Token Cosine, where higher is "
+                    "better, so a hypothesis is supported when the lower bound of a - b is above 0.")
+HEADERS = {"token_cosine": "Token Cosine", "region_token_cosine": "Region Token Cosine", "token_mse": "Token MSE",
+           "lpips": "LPIPS", "mse": "MSE", "region_lpips": "Region LPIPS", "region_mse": "Region MSE",
            "mask_mse": "Mask MSE", "spill": "Spill", "grid_lpips": "Grid LPIPS", "grid_mse": "Grid MSE"}
 FRAMES = ("Frames are numbered 1 to 10: a Window spans frame 1 to frame 10, the Previous Frame is frame 9, and the "
           "Last Step goes from frame 9 to frame 10. The Previous-Target Floor repeats the Grid Map of the step before "
@@ -48,10 +59,16 @@ def render(rep: dict) -> str:
     L = ["# Masked Frame scoring" if masked else "# Change Map scoring", "",
          f"Split: {rep['split']}. Windows: {rep['n_windows']} ({rep['n_no_change']} No Change). "
          f"Samples per Window: arms k={rep['k']}, floors 1. "
-         + ("Lower is better for every metric." if masked else "Lower LPIPS and MSE are better."), "", MASKED_FRAMES if masked else FRAMES, "",
+         + (("Lower is better for every metric except Token Cosine and Region Token Cosine (higher is better)."
+             if "tokens" in rep else "Lower is better for every metric.") if masked else "Lower LPIPS and MSE are better."), "", MASKED_FRAMES if masked else FRAMES, "",
          "## Caveats", "", f"- {CAPTION_LEAK}", f"- {caveat}", ""]
     if masked:
         L += [FLOOR_NOTES, "", HYPOTHESES, ""]
+    if "tokens" in rep:
+        t = rep["tokens"]
+        enc = f"{t['encoder']['id']} revision {t['encoder']['revision']}"
+        mse = (TOKEN_MSE_NORMALISED.format(stats=t["latent_stats"]) if t["normalised"] else TOKEN_MSE_RAW)
+        L += [TOKEN_METHOD.format(enc=enc, mse=mse, cache=t["cache"]), "", TOKEN_HYPOTHESES, ""]
     if "previous_target_floor" in rep["rows"]:
         L += [f"Previous-Target Floor: {rep['no_previous_rule']} Windows without a usable previous pair: "
               f"{rep['n_no_previous']} of {rep['n_windows']}.", ""]
@@ -67,11 +84,25 @@ def render(rep: dict) -> str:
         L.append("")
     L += ["PSNR is computed from each row's mean MSE, never per Window; it is n/a when the mean MSE is 0.", "",
           f"## Paired bootstrap ({rep['bootstrap']['resamples']} resamples, seed {rep['bootstrap']['seed']}, 95% interval)",
-          "", "Difference a - b of per-Window values; negative means a is better (lower).", "",
+          "", "Difference a - b of per-Window values; negative means a is better (lower)"
+          + ("; for Token Cosine and Region Token Cosine higher is better, so positive means a is better." if "tokens" in rep else "."), "",
           "| a | b | metric | mean diff | 95% low | 95% high |" + (" hypothesis |" if masked else ""),
           "|---|---|---|---|---|---|" + ("---|" if masked else "")]
     for c in rep["comparisons"]:
         L.append(f"| {c['a']} | {c['b']} | {c['metric']} | {_f(c['mean_diff'], 5)} | {_f(c['ci_lo'], 5)} | {_f(c['ci_hi'], 5)} |"
                  + (f" {c.get('hypothesis', '')} |" if masked else ""))
+    if rep.get("hypothesis_readings"):
+        L += ["", "## Pixel and token conclusions", "",
+              "Region LPIPS supports a hypothesis when its upper bound is below 0; Region Token Cosine when its lower bound is above 0. "
+              "A disagreement is flagged here and not resolved.", "",
+              "| hypothesis | a | b | Region LPIPS upper bound | pixel | Region Token Cosine lower bound | token | |",
+              "|---|---|---|---|---|---|---|---|"]
+        for r in rep["hypothesis_readings"]:
+            L.append(f"| {r['hypothesis']} | {r['a']} | {r['b']} | {_f(r['pixel_ci_hi'], 5)} | "
+                     f"{'supported' if r['pixel_supported'] else 'not supported'} | {_f(r['token_ci_lo'], 5)} | "
+                     f"{'supported' if r['token_supported'] else 'not supported'} | {'DISAGREE' if r['disagree'] else 'agree'} |")
+        dis = [r["hypothesis"] for r in rep["hypothesis_readings"] if r["disagree"]]
+        L += ["", f"Disagreement between pixel and token conclusions: {', '.join(dis)}." if dis
+              else "No hypothesis has disagreeing pixel and token conclusions."]
     L += ["", f"Panels: panels/ ({', '.join(rep['panel_windows'])}).", ""]
     return "\n".join(L)
