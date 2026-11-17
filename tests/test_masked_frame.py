@@ -316,3 +316,12 @@ def test_bootstrap_comparisons_for_h1_to_h5_and_report_labels(mtier, tmp_path):
     assert rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["psnr"] is not None or \
         rep["rows"]["copy_f8_floor"]["summary"]["all"]["single"]["mse"] == 0
 
+
+
+def test_score_without_matplotlib_still_writes_the_report_and_says_panels_are_skipped(mtier, tmp_path, monkeypatch, capsys):
+    import sys
+    monkeypatch.setitem(sys.modules, "matplotlib", None)             # the container has no matplotlib: import raises
+    rep = score(mtier, tmp_path)
+    assert (tmp_path / "report" / "report.json").exists() and (tmp_path / "report" / "report.md").exists()
+    assert not list((tmp_path / "report").glob("panels/*.png"))
+    assert "panels skipped" in capsys.readouterr().err and rep["rows"]

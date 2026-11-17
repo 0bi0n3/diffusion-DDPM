@@ -9,6 +9,7 @@ Per Window: single = mean over the k samples, best_of_k = minimum over them (an 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -139,5 +140,8 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(rep, indent=1) + "\n")
     (out / "report.md").write_text(report.render(rep))
-    panels.write_panels(out / "panels", per_arm, windows, truth, panel_ids, tg)
+    try:
+        panels.write_panels(out / "panels", per_arm, windows, truth, panel_ids, tg)
+    except ModuleNotFoundError as e:                 # the AISurrey container has no matplotlib: the report is complete without
+        print(f"changemap score: panels skipped ({e}); report.json and report.md are written", file=sys.stderr)
     return rep
