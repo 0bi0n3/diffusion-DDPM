@@ -132,3 +132,61 @@ def load_frames(tier, split: str, ids, verdict: bool = False) -> tuple:
     if f9.shape[1:] != (H, W, 3) or f8.shape[1:] != (H, W, 3):
         raise ValueError(f"{path}: frames must be uint8 ({H}, {W}, 3)")
     return f8, f9
+
+
+# ---- building the cache from the videos (`changemap frames`) ----------------------------------------------------------
+
+def _decode_video(job) -> tuple:
+    """(video, {second: (224, 400, 3) uint8 RGB}, error or None). Same reader and seconds as the Change Regions:
+    `change_regions.video.frames_at` (second k = first frame whose index / fps reaches k; larger than 1920x1080 is
+    downscaled to 1920x1080 first), then an area resize to 400x224."""
+    video, seconds = job
+    import cv2
+    from . import siblings  # noqa: F401  (puts change_regions on the path)
+    from change_regions.video import frames_at
+    got = {}
+    try:
+        for k, rgb in frames_at(video, seconds):
+            got[k] = cv2.resize(rgb, (W, H), interpolation=cv2.INTER_AREA)
+    except Exception as e:  # an unreadable video loses its Windows, not the run
+        return video, got, f"{type(e).__name__}: {e}"
+    return video, got, None
+
+
+def build_cache(tier, split: str, out, verdict: bool = False, workers: int = 4) -> dict:
+    """Decode F8 (= frames[8]) and F9 (= frames[9]) of every non-dropped Window of `<tier>/<split>_targets.jsonl` and
+    write `<out>/<split>_frames.npz` (+ `<split>_frames_missing.json`, the Windows that could not be decoded, left out
+    of the cache). Returns {"path", "n", "missing"}."""
+    import json
+    import multiprocessing as mp
+    if split == TEST and not verdict:
+        raise PermissionError("the test split is read only for a verdict: pass --verdict")
+    path = Path(tier) / f"{split}_targets.jsonl"
+    if split not in ("train", "val", TEST) or not path.exists():
+        raise ValueError(f"unknown split {split!r} or {path} not found")
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows = [r for r in rows if r["target_status"] != "dropped"]
+    wanted: dict = {}
+    for r in rows:
+        wanted.setdefault(r["video"], set()).update((int(r["frames"][8]), int(r["frames"][9])))
+    jobs = [(v, sorted(s)) for v, s in wanted.items()]
+    if workers > 1 and len(jobs) > 1:
+        with mp.get_context("spawn").Pool(min(workers, len(jobs))) as pool:
+            results = pool.map(_decode_video, jobs, chunksize=1)
+    else:
+        results = [_decode_video(j) for j in jobs]
+    frames = {v: (got, err) for v, got, err in results}
+    ids, f8, f9, missing = [], [], [], []
+    for r in rows:
+        got, err = frames[r["video"]]
+        a, b = int(r["frames"][8]), int(r["frames"][9])
+        if a in got and b in got:
+            ids.append(r["id"]); f8.append(got[a]); f9.append(got[b])
+        else:
+            missing.append({"id": r["id"], "video": r["video"], "seconds": [a, b],
+                            "reason": err or "second past the end of the video"})
+    Path(out).mkdir(parents=True, exist_ok=True)
+    cache = write_cache(out, split, ids, np.stack(f8) if f8 else np.zeros((0, H, W, 3), np.uint8),
+                        np.stack(f9) if f9 else np.zeros((0, H, W, 3), np.uint8))
+    (Path(out) / f"{split}_frames_missing.json").write_text(json.dumps(missing, indent=1) + "\n")
+    return {"path": cache, "n": len(ids), "missing": missing}
