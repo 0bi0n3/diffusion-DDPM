@@ -4,6 +4,11 @@
                                        [--script PATH]        write the sbatch file (runs nothing)
     python -m changemap.cluster submit ... [--dependency afterany:JOBID] [--dry-run]
                                                               sbatch it and add a ledger row; --dry-run only prints
+    python -m changemap.cluster render-score | submit-score --sha SHA --tier DIR --runs DIR --arms A B ... --samples DIR
+                                       --out DIR --lpips-dir DIR --latent-stats NPZ [--dependency afterok:ID1:ID2...]
+                                                              the sample + score job: after all train jobs finish, `changemap
+                                                              sample` per arm (k = 8, 50 Euler steps), then one `changemap score`
+                                                              with the real DINOv3 encoder on the GPU
 
 Policy (from the DiT latent study's `latentdit.cluster`, which supplies the time parsing, the 24 h limit and the ledger
 helpers): one GPU per arm, `--time` at most 24 h, code named by commit sha, memory right-sized. The job runs
@@ -77,6 +82,7 @@ export PYTHONNOUSERSITE=1
 export HF_HOME=$P/hf HF_HUB_OFFLINE=1 TORCH_COMPILE_DISABLE=1 USE_TF=0
 export CHANGEMAP_LATENTDIT_ROOT=${{CHANGEMAP_LATENTDIT_ROOT:-$P/siblings/latentdit}}
 export CHANGEMAP_DIT2VLM_ROOT=${{CHANGEMAP_DIT2VLM_ROOT:-$P/siblings/dit2vlm}}
+export CHANGE_REGIONS_REPO=${{CHANGE_REGIONS_REPO:-$P/siblings/change_regions}}
 export PYTHONPATH=$CODE:{WANDB_DEPS}
 export CHANGEMAP_COMMIT=$SHA
 export WANDB_DIR=$OUT
@@ -97,6 +103,102 @@ done
 cp "$P/logs/${{SLURM_JOB_NAME}}.${{SLURM_JOB_ID}}".* "$OUT/" 2>/dev/null
 exit $RC
 """
+
+
+def render_score_sbatch(sha: str, tier: str, runs: str, arms: list, samples: str, out: str, lpips_dir: str,
+                        latent_stats: str, time: str = "06:00:00", mem: str = "24G", cpus: int = 4, home: str = HOME,
+                        k: int = 8, sample_steps: int = 50, seed: int = 35, split: str = "val") -> str:
+    """One GPU job: wait for every arm's run to be finished, sample k per Window per arm, score all arms plus the floors
+    with the DINOv3 token metrics. Validation split only (`--split val`; never the test split)."""
+    lc.submit_command("train", sha, {}, time)
+    if split != "val":
+        raise ValueError("the experiment scores the validation split only")
+    q = shlex.quote
+    arm_list = " ".join(q(a) for a in arms)
+    return f"""#!/bin/bash
+# Change Map Diffusion: sample + score for {len(arms)} Conditioning Arms on one {PARTITION} GPU. Rendered by
+# `python -m changemap.cluster render-score`. Submit it with --dependency afterok:<every train job id> (the last job of
+# each resume chain). Re-running skips arms whose samples file exists, so it can be resubmitted after a failure.
+#SBATCH --job-name=changemap-score
+#SBATCH --partition={PARTITION}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --mem={mem}
+#SBATCH --time={time}
+#SBATCH --output={home}/logs/%x.%j.out
+#SBATCH --error={home}/logs/%x.%j.err
+
+set -uo pipefail
+P={q(home)}
+SHA={sha}
+CODE=$P/code/$SHA
+TIER={q(tier)}
+RUNS={q(runs)}
+SAMPLES={q(samples)}
+OUT={q(out)}
+LPIPS={q(lpips_dir)}
+STATS={q(latent_stats)}
+SIF={SIF}
+SIF_SHA256={SIF_SHA256}
+
+mkdir -p "$P/logs" "$SAMPLES" "$OUT"
+[ -e "$CODE/changemap/cli.py" ] || {{ echo "code not staged: $CODE"; exit 2; }}
+[ -e "$TIER/val_targets.jsonl" ] || {{ echo "tier not staged: $TIER"; exit 2; }}
+[ -e "$LPIPS/vgg.pth" ] && [ -e "$STATS" ] || {{ echo "LPIPS weights or latent stats not staged"; exit 2; }}
+ls "$P"/hf/hub/models--facebook--dinov3-vitb16-pretrain-lvd1689m/snapshots/*/model.safetensors >/dev/null 2>&1 \
+    || {{ echo "DINOv3 weights not staged under $P/hf/hub"; exit 2; }}
+[ -e "$SIF" ] || {{ echo "missing image $SIF"; exit 2; }}
+[ "$(sha256sum "$SIF" | cut -d' ' -f1)" = "$SIF_SHA256" ] || {{ echo "image checksum differs from the pinned one"; exit 2; }}
+
+# Host conda/python variables must not leak into the container.
+unset PYTHONHOME PYTHONPATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PYTHON_EXE
+export PYTHONNOUSERSITE=1
+export HF_HOME=$P/hf HF_HUB_OFFLINE=1 TORCH_COMPILE_DISABLE=1 USE_TF=0
+export CHANGEMAP_LATENTDIT_ROOT=${{CHANGEMAP_LATENTDIT_ROOT:-$P/siblings/latentdit}}
+export CHANGEMAP_DIT2VLM_ROOT=${{CHANGEMAP_DIT2VLM_ROOT:-$P/siblings/dit2vlm}}
+export CHANGE_REGIONS_REPO=${{CHANGE_REGIONS_REPO:-$P/siblings/change_regions}}
+export PYTHONPATH=$CODE
+export CHANGEMAP_COMMIT=$SHA
+
+echo "job $SLURM_JOB_ID sha $SHA node $(hostname) arms {' '.join(arms)} tier $TIER out $OUT"
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+
+for ARM in {arm_list}; do
+    apptainer exec "$SIF" python -c "import json,sys; sys.exit(json.load(open(sys.argv[1]))['status'] != 'finished')" \
+        "$RUNS/$ARM/run_record.json" || {{ echo "run $RUNS/$ARM is not finished"; exit 3; }}
+done
+
+cd "$OUT"
+for ARM in {arm_list}; do
+    [ -e "$SAMPLES/$ARM.npz" ] && continue
+    apptainer exec --nv "$SIF" python -m changemap.cli sample --run "$RUNS/$ARM" --tier "$TIER" --split {split} \
+        --k {k} --steps {sample_steps} --seed {seed} --out "$SAMPLES" --device cuda || exit $?
+done
+apptainer exec --nv "$SIF" python -m changemap.cli score --tier "$TIER" --split {split} --samples "$SAMPLES" \
+    --out "$OUT" --lpips-dir "$LPIPS" --device cuda --encoder dinov3 --encoder-device cuda --latent-stats "$STATS"
+RC=$?
+cp "$P/logs/${{SLURM_JOB_NAME}}.${{SLURM_JOB_ID}}".* "$OUT/" 2>/dev/null
+exit $RC
+"""
+
+
+def _add_score_args(s) -> None:
+    s.add_argument("--sha", required=True)
+    s.add_argument("--tier", required=True)
+    s.add_argument("--runs", required=True, help="folder holding one finished run per arm: <runs>/<arm>")
+    s.add_argument("--arms", nargs="+", required=True)
+    s.add_argument("--samples", required=True, help="where the samples files are written")
+    s.add_argument("--out", required=True, help="where report.json, report.md and panels are written")
+    s.add_argument("--lpips-dir", required=True)
+    s.add_argument("--latent-stats", required=True)
+    s.add_argument("--time", default="06:00:00")
+    s.add_argument("--mem", default="24G")
+    s.add_argument("--cpus", type=int, default=4)
+    s.add_argument("--k", type=int, default=8)
+    s.add_argument("--sample-steps", type=int, default=50)
+    s.add_argument("--seed", type=int, default=35)
 
 
 def _add_job_args(s) -> None:
@@ -123,7 +225,17 @@ def main(argv=None) -> int:
     s.add_argument("--dependency", metavar="afterany:JOBID")
     s.add_argument("--note", default="")
     s.add_argument("--dry-run", action="store_true", help="print the sbatch command; render and submit nothing")
+    rs = sub.add_parser("render-score")
+    _add_score_args(rs)
+    rs.add_argument("--script", type=Path, help="where to write the sbatch file (default stdout)")
+    ss = sub.add_parser("submit-score")
+    _add_score_args(ss)
+    ss.add_argument("--dependency", metavar="afterok:ID1:ID2...")
+    ss.add_argument("--note", default="")
+    ss.add_argument("--dry-run", action="store_true", help="print the sbatch command; render and submit nothing")
     a = p.parse_args(argv)
+    if a.cmd in ("render-score", "submit-score"):
+        return _score_main(a, p)
     try:
         text = render_sbatch(a.arm, a.sha, a.tier, a.out, a.steps, a.time, a.mem, a.cpus, a.home, a.train_args)
         script = Path(a.home) / "scripts" / f"train_{a.arm}.sbatch" if a.cmd == "submit" else a.script
@@ -146,6 +258,40 @@ def main(argv=None) -> int:
     job_id = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip().split(";")[0]
     lc.append(Path(a.home) / "ledger.tsv",
               lc.ledger_row(job_id, f"changemap-{a.arm}", PARTITION, 1, a.sha, lc.IMAGE_TAG, lc._now(), a.note))
+    print(job_id)
+    return 0
+
+
+def _score_main(a, p) -> int:
+    import re
+    try:
+        text = render_score_sbatch(a.sha, a.tier, a.runs, a.arms, a.samples, a.out, a.lpips_dir, a.latent_stats, a.time,
+                                   a.mem, a.cpus, a.home, a.k, a.sample_steps, a.seed)
+        dep = getattr(a, "dependency", None)
+        if dep is not None and not re.fullmatch(r"afterok(:\d+)+", dep):
+            raise ValueError(f"--dependency must look like afterok:<jobid>[:<jobid>...], got {dep!r}")
+        script = Path(a.home) / "scripts" / "score.sbatch" if a.cmd == "submit-score" else a.script
+        if a.cmd == "submit-score":
+            cmd = lc.submit_command("train", a.sha, {}, a.time, a.home, a.mem)[:-1]
+            cmd = [c for c in cmd if not c.startswith("--job-name=")] + ["--job-name=changemap-score"]
+            cmd += [f"--dependency={dep}"] if dep else []
+            cmd.append(str(script))
+    except ValueError as e:
+        p.exit(2, f"changemap.cluster: error: {e}\n")
+    if a.cmd == "render-score":
+        if script:
+            Path(script).write_text(text)
+        else:
+            print(text, end="")
+        return 0
+    print(shlex.join(cmd))
+    if a.dry_run:
+        return 0
+    Path(script).parent.mkdir(parents=True, exist_ok=True)
+    Path(script).write_text(text)
+    job_id = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip().split(";")[0]
+    lc.append(Path(a.home) / "ledger.tsv",
+              lc.ledger_row(job_id, "changemap-score", PARTITION, 1, a.sha, lc.IMAGE_TAG, lc._now(), a.note))
     print(job_id)
     return 0
 

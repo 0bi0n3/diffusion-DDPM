@@ -98,7 +98,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
         missing = [key for key in tg.sample_keys if key not in z.files]
         if missing:
             raise ValueError(f"{path}: no {missing} arrays (a {tg.name} samples file holds {tg.sample_keys})")
-        arm_maps[str(z["arm"])] = {key: z[key] for key in tg.sample_keys}
+        arm_maps[str(z["arm"])] = {key: z[key].astype(np.float32) if key == "mask" else z[key] for key in tg.sample_keys}
     arm_maps = dict(sorted(arm_maps.items(), key=lambda kv: (ARM_ORDER.index(kv[0]) if kv[0] in ARM_ORDER else 99, kv[0])))
     n = len(windows)
     if token_metrics:

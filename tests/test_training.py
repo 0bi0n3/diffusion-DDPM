@@ -185,6 +185,7 @@ def test_job_script_renders_with_resume_and_limit(tmp_path, monkeypatch):
     assert "--signal=B:USR1@" in text
     assert "--resume auto" in text and "--arm unconditional" in text and "--steps 20000" in text
     assert "--device cuda" in text and "--wandb-mode online" in text
+    assert "siblings/change_regions" in text and "siblings/latentdit" in text and "siblings/dit2vlm" in text
     assert "/runs/unconditional" in text and "CHANGEMAP_COMMIT" in text
     limit = int(text.split("--time-limit ")[1].split()[0])
     assert 0 < limit < 24 * 3600                                  # the program stops itself before Slurm does
@@ -225,3 +226,68 @@ def test_context_arm_resume_and_record_hashes_context(tier, tmp_path):
     assert same(weights(full / "model.pt"), weights(part / "model.pt"))
     assert {"train_context.npz", "val_context.npz"} <= set(record(part)["data_sha256"])
     assert [e["step"] for e in json.loads((part / "log.json").read_text())["validation"]] == [2, 4]
+
+
+# ---- sample + score job (dry run only) -------------------------------------------------------------------------
+
+ARMS = ["unconditional", "caption_only", "frame_only", "frame_caption"]
+
+
+def render_score(tmp_path, *extra):
+    from changemap import cluster
+    script = tmp_path / "score.sbatch"
+    rc = cluster.main(["render-score", "--sha", "abc1234", "--tier", "/data/tier_1k", "--runs", "/runs",
+                       "--arms", *ARMS, "--samples", "/runs/samples", "--out", "/runs/report",
+                       "--lpips-dir", "/data/lpips", "--latent-stats", "/data/stats/stats.npz",
+                       "--script", str(script), *extra])
+    return rc, script
+
+
+def test_score_job_samples_each_arm_then_scores_with_dinov3_on_cuda(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("nothing may be run or submitted"))
+    rc, script = render_score(tmp_path)
+    assert rc == 0
+    text = script.read_text()
+    assert text.count("changemap.cli sample") == 1 and text.count("for ARM in " + " ".join(ARMS)) == 2   # one loop, every arm
+    assert "RUNS=/runs" in text and '--run "$RUNS/$ARM"' in text
+    assert "--k 8" in text and "--steps 50" in text and "--seed 35" in text and "--split val" in text
+    score = text[text.index("changemap.cli score"):]
+    for flag in ("--encoder dinov3", "--encoder-device cuda", '--latent-stats "$STATS"', '--lpips-dir "$LPIPS"',
+                 "--device cuda", '--samples "$SAMPLES"', '--out "$OUT"'):
+        assert flag in score
+    for var in ("STATS=/data/stats/stats.npz", "LPIPS=/data/lpips", "SAMPLES=/runs/samples", "OUT=/runs/report"):
+        assert var in text
+    assert "--verdict" not in text and "--split test" not in text and "siblings/change_regions" in text
+    assert "#SBATCH --gpus=1" in text and "#SBATCH --partition=a100" in text and "#SBATCH --mem=" in text
+    assert "CHANGEMAP_COMMIT" in text and "run_record.json" in text       # waits for finished runs
+
+
+def test_score_job_is_valid_bash(tmp_path):
+    _, script = render_score(tmp_path)
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+
+
+def test_score_job_refuses_over_24h(tmp_path):
+    with pytest.raises(SystemExit) as e:
+        render_score(tmp_path, "--time", "24:00:01")
+    assert e.value.code not in (0, None)
+
+
+def test_score_job_submit_dry_run_depends_on_all_train_jobs_with_afterok(tmp_path, monkeypatch, capsys):
+    from changemap import cluster
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("nothing may be run or submitted"))
+    rc = cluster.main(["--home", str(tmp_path), "submit-score", "--dry-run", "--sha", "abc1234",
+                       "--tier", "/data/tier_1k", "--runs", "/runs", "--arms", *ARMS, "--samples", "/runs/samples",
+                       "--out", "/runs/report", "--lpips-dir", "/data/lpips", "--latent-stats", "/data/s.npz",
+                       "--dependency", "afterok:11:12:13:14"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "--dependency=afterok:11:12:13:14" in out and "--time=" in out
+    assert not (tmp_path / "ledger.tsv").exists()
+
+
+def test_score_job_rejects_a_malformed_dependency(tmp_path):
+    from changemap import cluster
+    with pytest.raises(SystemExit):
+        cluster.main(["--home", str(tmp_path), "submit-score", "--dry-run", "--sha", "abc1234", "--tier", "/t",
+                      "--runs", "/r", "--arms", "unconditional", "--samples", "/s", "--out", "/o",
+                      "--lpips-dir", "/l", "--latent-stats", "/x.npz", "--dependency", "afterok:1,2"])
