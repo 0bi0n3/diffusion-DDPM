@@ -1,4 +1,4 @@
-"""`changemap train | sample | score | run`: the one seam."""
+"""`changemap train | sample | score | run | frames`: the one seam."""
 from __future__ import annotations
 
 import argparse
@@ -70,6 +70,13 @@ def _parser() -> argparse.ArgumentParser:
     c.add_argument("--device", default="cpu", help=DEVICE_HELP)
     token_options(c)
 
+    f = sub.add_parser("frames", help="decode the frame cache <out>/<split>_frames.npz from the tier's videos")
+    f.add_argument("--tier", required=True, type=Path)
+    f.add_argument("--split", choices=("train", "val", "test"), required=True)
+    f.add_argument("--verdict", action="store_true", help="allow reading the test split")
+    f.add_argument("--out", required=True, type=Path)
+    f.add_argument("--workers", type=int, default=4, help="decoding processes, one video each (default 4)")
+
     r = sub.add_parser("run")
     common(r, True)
     r.add_argument("--arms", nargs="+", default=["unconditional"])
@@ -106,6 +113,10 @@ def main(argv=None) -> int:
                             train_mod.options_from(a), target=a.target)
         elif a.cmd == "sample":
             sample_mod.sample(a.run, a.tier, a.split, a.k, a.steps, a.seed, a.out, a.verdict, a.device, target=a.target)
+        elif a.cmd == "frames":
+            from . import frames as frames_mod
+            res = frames_mod.build_cache(a.tier, a.split, a.out, a.verdict, a.workers)
+            print(f"{res['path']}: {res['n']} Windows, {len(res['missing'])} undecodable")
         elif a.cmd == "score":
             score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target,
                             **token_kwargs(a))
