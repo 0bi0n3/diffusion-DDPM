@@ -1,0 +1,58 @@
+{
+  "code_commit": "a891b200a4e487431c6835d0ac048b8ebc67ae74",
+  "sibling_commits": {
+    "latentdit": "unknown",
+    "dit2vlm": "unknown"
+  },
+  "config": {
+    "target": "masked_frame",
+    "arm": "unconditional",
+    "steps": 20000,
+    "batch": 64,
+    "lr": 0.0001,
+    "hidden": 384,
+    "depth": 12,
+    "heads": 6,
+    "seed": 35,
+    "shift": 9.354143466934854,
+    "tier": "/mnt/fast/nobackup/scratch4weeks/od00383/change_map/tier_1k",
+    "n_train_windows": 789,
+    "device": "cuda",
+    "ema_decay": 0.9999,
+    "warmup": 500,
+    "amp": "auto",
+    "val_every": 1000,
+    "val_n": 100,
+    "val_sample_steps": 10,
+    "n_params": 44723584
+  },
+  "data_sha256": {
+    "train_context.npz": "cfdc1f4e29468b1e0706c0f5c675536b3fd84e3ec8902d2374ebe3ffc441a991",
+    "train_frames.npz": "65a8fd663c1f9a7898de6968f1f4046573bb32ed66047e146ed54a5123b306a1",
+    "train_frames_missing.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "train_previous.jsonl": "a6fcb429566e5a2dd59a53e710f4031385016586ce3e6767ed80f7bc105e1461",
+    "train_targets.jsonl": "252356ae488f9255098300b9d4e930dc93027af0f4a3ccf568f74e4c43375375",
+    "val_context.npz": "a977625db86fc127f60b15e60f089785bf2a28c419f7fab62911af80928eaa89",
+    "val_frames.npz": "69f641d7657ed0ca6753386d937b210e6972c8825bffd38fa72929baf1d82462",
+    "val_frames_missing.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "val_previous.jsonl": "966b84d85d123ca63b39a65be73536ae849f87f585c040b1e733ec6af492a1e7",
+    "val_targets.jsonl": "f4e25b9bd3e31a3c050494de833841ca2e338f7a5fd6a4f01f8ef71e7fd58ef5"
+  },
+  "device": "NVIDIA A100-SXM4-80GB",
+  "status": "finished",
+  "step": 20000,
+  "wall_time_seconds": 7993.957592044957,
+  "peak_memory": {
+    "host_rss_mb": 3374.0390625,
+    "gpu_allocated_mb": 26453.97265625
+  },
+  "jobs": [
+    {
+      "from_step": 0,
+      "to_step": 20000,
+      "wall_seconds": 7992.295254259836,
+      "status": "finished"
+    }
+  ],
+  "written_at": "2026-11-17T04:54:09+00:00"
+}

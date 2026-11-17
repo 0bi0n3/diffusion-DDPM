@@ -53,11 +53,13 @@ class TrainOptions:
     wandb_mode: str = "off"           # off | online | offline
     wandb_project: str = PROJECT
     run_name: str | None = None
+    grad_clip: float = 1.0           # max global grad norm; 0 disables (v2: the v1 Frame+Caption run diverged without it)
 
 
 def add_arguments(t) -> None:
     d = TrainOptions()
     t.add_argument("--ema-decay", type=float, default=d.ema_decay)
+    t.add_argument("--grad-clip", type=float, default=d.grad_clip, help="max global gradient norm; 0 disables")
     t.add_argument("--warmup", type=int, default=d.warmup, help="LR warm-up steps")
     t.add_argument("--amp", choices=("auto", "bf16", "off"), default=d.amp)
     t.add_argument("--val-every", type=int, default=d.val_every)
@@ -76,7 +78,8 @@ def add_arguments(t) -> None:
 def options_from(a) -> TrainOptions:
     return TrainOptions(a.ema_decay, a.warmup, a.amp, a.val_every, a.val_n, a.val_sample_steps, ckpt_every=a.ckpt_every,
                         log_every=a.log_every, resume=a.resume, stop_after=a.stop_after, time_limit=a.time_limit,
-                        wandb_mode=a.wandb_mode, wandb_project=a.wandb_project, run_name=a.run_name)
+                        wandb_mode=a.wandb_mode, wandb_project=a.wandb_project, run_name=a.run_name,
+                        grad_clip=a.grad_clip)
 
 
 def lr_at(step: int, lr: float, warmup: int, steps: int) -> float:
@@ -131,7 +134,7 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
     windows = load_windows(tier, "train")
     config = {"target": tg.name, "arm": arm, "steps": steps, "batch": batch, "lr": lr, "hidden": hidden, "depth": depth, "heads": heads,
               "seed": seed, "shift": transport.time_shift(tg.shape), "tier": str(tier),
-              "n_train_windows": len(windows), "device": device, "ema_decay": opts.ema_decay, "warmup": opts.warmup,
+              "n_train_windows": len(windows), "device": device, "ema_decay": opts.ema_decay, "grad_clip": opts.grad_clip, "warmup": opts.warmup,
               "amp": opts.amp, "val_every": opts.val_every, "val_n": opts.val_n,
               "val_sample_steps": opts.val_sample_steps}
     shift = config["shift"]
@@ -217,10 +220,12 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
             loss = transport.velocity_loss(pred.float(), ut)
             opt.zero_grad()
             loss.backward()
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                           opts.grad_clip if opts.grad_clip > 0 else float("inf")))
             opt.step()
             ema.update(model)
             step += 1
-            log["train"].append({"step": step, "loss": float(loss), "lr": step_lr})
+            log["train"].append({"step": step, "loss": float(loss), "lr": step_lr, "grad_norm": grad_norm})
             if step % opts.log_every == 0 or step == steps:
                 wb.train(step, float(loss), step_lr)
             if (opts.val_every and step % opts.val_every == 0) or step == steps:
