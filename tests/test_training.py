@@ -291,3 +291,20 @@ def test_score_job_rejects_a_malformed_dependency(tmp_path):
         cluster.main(["--home", str(tmp_path), "submit-score", "--dry-run", "--sha", "abc1234", "--tier", "/t",
                       "--runs", "/r", "--arms", "unconditional", "--samples", "/s", "--out", "/o",
                       "--lpips-dir", "/l", "--latent-stats", "/x.npz", "--dependency", "afterok:1,2"])
+
+
+def test_gradient_clipping_recorded_and_grad_norm_logged(tier, tmp_path):
+    out = tmp_path / "clip"
+    assert train(tier, out, 3, "--grad-clip", "0.5") == 0
+    cfg = json.loads((out / "config.json").read_text())
+    assert cfg["grad_clip"] == 0.5
+    log = json.loads((out / "log.json").read_text())
+    assert all("grad_norm" in e and e["grad_norm"] >= 0 for e in log["train"])
+
+
+def test_gradient_clipping_on_by_default_and_zero_disables(tier, tmp_path):
+    assert train(tier, tmp_path / "d", 1) == 0
+    assert json.loads((tmp_path / "d" / "config.json").read_text())["grad_clip"] == 1.0
+    assert train(tier, tmp_path / "z", 1, "--grad-clip", "0") == 0
+    assert json.loads((tmp_path / "z" / "config.json").read_text())["grad_clip"] == 0.0
+

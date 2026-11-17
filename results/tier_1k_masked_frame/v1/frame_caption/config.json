@@ -1,0 +1,22 @@
+{
+ "target": "masked_frame",
+ "arm": "frame_caption",
+ "steps": 20000,
+ "batch": 64,
+ "lr": 0.0001,
+ "hidden": 384,
+ "depth": 12,
+ "heads": 6,
+ "seed": 35,
+ "shift": 9.354143466934854,
+ "tier": "/mnt/fast/nobackup/scratch4weeks/od00383/change_map/tier_1k",
+ "n_train_windows": 789,
+ "device": "cuda",
+ "ema_decay": 0.9999,
+ "warmup": 500,
+ "amp": "auto",
+ "val_every": 1000,
+ "val_n": 100,
+ "val_sample_steps": 10,
+ "n_params": 44723584
+}
