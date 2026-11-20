@@ -32,6 +32,7 @@ class Window:
     previous_map: np.ndarray | None = None   # Grid Map of the F7 -> F8 Step Pair; None when there is no previous pair
     previous_frame: str | None = None        # optional image path of the Previous Frame (F8), for panels only
     previous_regions: tuple | None = None    # Significant Regions of the F7 -> F8 Step Pair; None when there is no previous pair
+    source_window_id: str | None = None      # parent Window id for two-frame Step Pairs (None for Last-Step tiers)
 
     @property
     def no_change(self) -> bool:
@@ -93,7 +94,42 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
         regions = significant_regions(row) if status == "target" else ()
         prev = external[row["id"]] if row["id"] in external else row.get("previous")
         out.append(Window(row["id"], regions, hints.change_map(regions, GRID).numpy(), previous_grid_map(prev),
-                          row.get("previous_frame"), previous_regions(prev)))
+                          row.get("previous_frame"), previous_regions(prev), row.get("source_window_id")))
+    return out
+
+
+def _index_path(tier, split: str) -> Path:
+    p = Path(tier) / f"{split}_index.jsonl"
+    if p.exists():
+        return p
+    alt = Path(tier) / split / "index.jsonl"
+    return alt if alt.exists() else p
+
+
+def load_index(tier, split: str, windows: list[Window], verdict: bool = False) -> list[tuple]:
+    """Join `windows` to `<tier>/<split>_index.jsonl` (or `<tier>/<split>/index.jsonl`) by Step Pair id and source
+    Window (`<id>@<source_window_id>`). Refuses missing files, missing rows, or regions that differ from the tier row's
+    Significant Regions. Returns one tuple of 1920x1080 boxes per Window."""
+    if split == TEST and not verdict:
+        raise PermissionError("the test split is read only for a verdict: pass --verdict")
+    path = _index_path(tier, split)
+    if not path.exists():
+        raise ValueError(f"{path} not found: change_map_pixels needs the Change Map image index")
+    by_win = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        by_win[r["window"]] = tuple(tuple(float(v) for v in b) for b in r["regions_px_1920x1080"])
+    out = []
+    for w in windows:
+        key = f"{w.id}@{w.source_window_id}" if w.source_window_id else w.id
+        if key not in by_win:
+            raise ValueError(f"{path}: no index row for {key!r}")
+        regs = by_win[key]
+        if regs != w.regions:
+            raise ValueError(f"{path}: index regions for {key!r} differ from the tier row's Significant Regions")
+        out.append(regs)
     return out
 
 

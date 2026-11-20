@@ -105,6 +105,34 @@ def from_model_range(x) -> tuple:
     return np.rint(img[..., :3] * 255).astype(np.uint8), img[..., 3].astype(np.float32)
 
 
+def fold_map(m: np.ndarray) -> np.ndarray:
+    """(..., 224, 400) -> (..., 28, 50, 64), 8x8 space-to-depth for a 1-channel Change Map."""
+    m = np.asarray(m)
+    lead = m.shape[:-2]
+    x = m.reshape(*lead, GRID[0], BLOCK, GRID[1], BLOCK)
+    x = np.moveaxis(x, -3, -2)
+    return x.reshape(*lead, *GRID, BLOCK * BLOCK)
+
+
+def unfold_map(sq: np.ndarray) -> np.ndarray:
+    """(..., 28, 50, 64) -> (..., 224, 400)."""
+    sq = np.asarray(sq)
+    lead = sq.shape[:-3]
+    x = sq.reshape(*lead, *GRID, BLOCK, BLOCK)
+    x = np.moveaxis(x, -2, -3)
+    return x.reshape(*lead, H, W)
+
+
+def map_to_model_range(m: np.ndarray) -> np.ndarray:
+    """(224, 400) Change Map in [0, 1] -> folded (28, 50, 64) float32 in [-1, 1]."""
+    return fold_map(np.asarray(m, np.float32) * 2 - 1).astype(np.float32)
+
+
+def map_from_model_range(x) -> np.ndarray:
+    """Model output (..., 28, 50, 64) -> (..., 224, 400) float32 clipped to [0, 1]."""
+    return np.clip((unfold_map(np.asarray(x, np.float32)) + 1) / 2, 0, 1).astype(np.float32)
+
+
 def frames_path(tier, split: str) -> Path:
     return Path(tier) / f"{split}_frames.npz"
 
