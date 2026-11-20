@@ -26,7 +26,7 @@ from latentdit import transport  # noqa: E402
 
 from . import runrecord
 from . import targets
-from .data import GRID, load_context, load_windows
+from .data import GRID, load_context, load_windows, window_ids
 from .ema import EMA
 from .model import build_model, n_params, uses_context
 from .wandb_log import PROJECT, RunLog
@@ -181,14 +181,14 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
     ac = dict(device_type=device.split(":")[0], dtype=torch.bfloat16, enabled=bf16)
 
     data = torch.from_numpy(train_arr).to(device)
-    ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "train", [w.id for w in windows])] \
+    ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "train", [w.key for w in windows])] \
         if uses_context(arm) else None
     val = load_windows(tier, "val")
     keep = sorted(np.random.default_rng(seed).permutation(len(val))[:opts.val_n])
     val = [val[i] for i in keep]
     val_x = torch.from_numpy(tg.tensors(tier, "val", val)).to(device)
-    val_ids, val_truth = [w.id for w in val], tg.truths(tier, "val", val)
-    val_ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "val", val_ids)] if uses_context(arm) else None
+    val_ids, val_truth = window_ids(val), tg.truths(tier, "val", val)
+    val_ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "val", [w.key for w in val])] if uses_context(arm) else None
 
     wb = RunLog.open(opts.wandb_mode, opts.wandb_project, opts.run_name or out.name, config, out)
     stop = {"flag": False}

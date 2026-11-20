@@ -14,9 +14,10 @@ def write_panels(out, arms: dict, windows, truth, panel_ids, target, max_samples
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    from .data import window_ids
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    index = {w.id: i for i, w in enumerate(windows)}
+    index = {wid: i for i, wid in enumerate(window_ids(windows))}
     rows = target.panel_rows
     paths = []
     for name, a in arms.items():

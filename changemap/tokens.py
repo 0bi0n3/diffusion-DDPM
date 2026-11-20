@@ -122,7 +122,11 @@ def true_tokens(tier, split, encoder, ids, true_rgb) -> np.ndarray:
             raise ValueError(f"{path}: token cache checksum mismatch (delete it to re-encode)")
         z = np.load(path)
         have = {(str(i), str(s)): t for i, s, t in zip(z["ids"], z["input_sha256"], z["tokens"])}
-    todo = [i for i, (w, s) in enumerate(zip(ids, shas)) if (w, s) not in have]
+    todo, seen = [], set()
+    for i, (w, s) in enumerate(zip(ids, shas)):
+        if (w, s) not in have and (w, s) not in seen:
+            todo.append(i)
+            seen.add((w, s))
     if todo:
         for i, t in zip(todo, encode_frames(encoder, true_rgb[todo])):
             have[(ids[i], shas[i])] = t
@@ -160,9 +164,19 @@ def map_latent_stats(tier, encoder, train_ids, train_maps) -> tuple[tuple[np.nda
         if meta.get("train_cache_sha256") == train_sha:
             z = np.load(path)
             return (z["mean"].astype(np.float32), z["std"].astype(np.float32)), path
-    x = toks.astype(np.float64)
-    mean = x.mean(axis=(0, 1, 2)).astype(np.float32)
-    std = x.std(axis=(0, 1, 2))
+    c = toks.shape[-1]
+    n_el = 0
+    s1 = np.zeros(c, np.float64)
+    s2 = np.zeros(c, np.float64)
+    for i in range(0, len(toks), 256):
+        blk = toks[i:i + 256].astype(np.float64)
+        n_el += blk.shape[0] * blk.shape[1] * blk.shape[2]
+        s1 += blk.sum(axis=(0, 1, 2))
+        s2 += (blk * blk).sum(axis=(0, 1, 2))
+    mean64 = s1 / max(n_el, 1)
+    var64 = np.maximum(s2 / max(n_el, 1) - mean64 * mean64, 0.0)
+    mean = mean64.astype(np.float32)
+    std = np.sqrt(var64)
     std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, mean=mean, std=std)
@@ -177,6 +191,31 @@ def train_map_latent_stats(tier, encoder) -> tuple[tuple[np.ndarray, np.ndarray]
     train_w = load_windows(tier, "train")
     train_maps = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)])
     return map_latent_stats(tier, encoder, [w.id for w in train_w], train_maps)
+
+
+def build_map_latents(tier, splits=("train", "val"), encoder_kind: str = "dinov3", device: str = "cpu",
+                      verdict: bool = False) -> dict:
+    """Pre-build per-split Map Latent caches and training Map Latent stats under `<tier>/token_cache/`."""
+    from .data import TEST, load_index, load_windows
+    for s in splits:
+        if s == TEST and not verdict:
+            raise PermissionError("the test split is read only for a verdict: pass --verdict")
+    enc = load_encoder(encoder_kind, device)
+    out = {"encoder": {"kind": encoder_kind, "id": enc.id, "revision": enc.revision}, "splits": {}}
+    train_w = train_maps = None
+    for s in splits:
+        wins = load_windows(tier, s, verdict)
+        regs = load_index(tier, s, wins, verdict)
+        maps = np.stack([frames.change_mask(r) for r in regs])
+        true_tokens(tier, s, enc, [w.id for w in wins], map_rgb(maps))
+        cp = cache_path(tier, s, enc)
+        out["splits"][s] = {"windows": len(wins), "cache": str(cp), "sha256": _file_sha(cp)}
+        if s == "train":
+            train_w, train_maps = wins, maps
+    if train_w is not None:
+        _, sp = map_latent_stats(tier, enc, [w.id for w in train_w], train_maps)
+        out["train_stats"] = {"path": str(sp), "sha256": _file_sha(sp)}
+    return out
 
 
 def score_samples(encoder, tokens_true, region, rgb, mask, stats=None) -> dict:

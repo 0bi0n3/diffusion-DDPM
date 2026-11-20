@@ -1,0 +1,80 @@
+{
+ "ticket": 20,
+ "spec": 14,
+ "local_staging_dir": "/mnt/hitchcock/scratch/oberon/changemap_data/two_frame_tier_1k",
+ "aisurrey_staging_dir": "/mnt/fast/nobackup/scratch4weeks/od00383/change_map/two_frame_tier_1k",
+ "splits": {
+  "train": {
+   "total_rows": 7200,
+   "dropped_pairs": 97,
+   "step_pairs": 7103,
+   "no_change": 2140,
+   "unique_ids": 7040,
+   "unique_composite_keys": 7103,
+   "index_mismatches": 0,
+   "input_frame_store_hits_dit": 6744,
+   "input_frame_encoded_fresh_aisurrey": 359,
+   "fresh_tutorial": 18,
+   "fresh_aisurrey_job_id": "220013",
+   "previous_with_pair": 7015,
+   "previous_dropped": 76,
+   "previous_none": 12
+  },
+  "val": {
+   "total_rows": 900,
+   "dropped_pairs": 7,
+   "step_pairs": 893,
+   "no_change": 289,
+   "unique_ids": 885,
+   "unique_composite_keys": 893,
+   "index_mismatches": 0,
+   "input_frame_store_hits_dit": 893,
+   "input_frame_encoded_fresh_aisurrey": 0,
+   "previous_with_pair": 885,
+   "previous_dropped": 7,
+   "previous_none": 1
+  }
+ },
+ "test_split_read": false,
+ "borncg_read": false,
+ "encoders": {
+  "dinov3": "facebook/dinov3-vitb16-pretrain-lvd1689m@5931719e67bbdb9737e363e781fb0c67687896bc",
+  "clip": "openai/clip-vit-large-patch14@32bd64288804d66eefd0ccbe215aa642df71cc41"
+ },
+ "aisurrey_jobs": {
+  "t18_fresh_input_frames": {
+   "job_id": "220013",
+   "state": "COMPLETED",
+   "elapsed": "00:02:19",
+   "partition": "a100"
+  },
+  "map_latents_and_train_stats": {
+   "job_id": "220085",
+   "state": "COMPLETED",
+   "elapsed": "00:25:58",
+   "partition": "a100"
+  },
+  "prior_failed_or_cancelled": {
+   "220010": "OUT_OF_MEMORY at 32G before streaming float64 stats fix",
+   "220012": "CANCELLED duplicate of 220010",
+   "220014": "CANCELLED duplicate of 220013"
+  }
+ },
+ "staged_files_sha256": {
+  "train_targets.jsonl": "e8ec6e175c5e5c3888977efc750579f5440257fd665f2752a88cea30f6d2e3dc",
+  "val_targets.jsonl": "a4bf68d8d38778cc69c5d934dc42ad4f47ca1ed97c5fb77ed19f4ba88595d5f8",
+  "train_index.jsonl": "ab12cbb9647cadc6f91abbc344e6ee7ab117e71065b35d71408d315dffd8bcbc",
+  "val_index.jsonl": "285d3bf00fdd1c12a7e3762a5cda8f2e3056e96611132369bbb445d306fdbc57",
+  "train_previous.jsonl": "ac2301c49fe5ed63f7815f2e26f0c881bae57bc6f14be550eb682f7f5b873a0d",
+  "val_previous.jsonl": "9ee2c9be1cc7383e6ee066fb89bcc3b40a6310b05ee004f9c1ec9365a4ce38dd",
+  "train_context.npz": "ebf305dc2a66f73472fb59b35c94b965e3ca2317a17c0db869738c8b7646ca0e",
+  "val_context.npz": "9bc253b53f514ef5772a0c78d65aa8a80cee3aaaddbcaafa336bc925639aaf72",
+  "context_manifest.json": "196e6179ac033cd0388b2caa4dc5f82556dfb740e87c98300547eb432b4716b2",
+  "token_cache/train__facebook-dinov3-vitb16-pretrain-lvd1689m__5931719e67bbdb9737e363e781fb0c67687896bc.npz": "f87e1627e9770249e83b3a701ac6d12b7952d626538753ac596d7c93561cc8da",
+  "token_cache/train__facebook-dinov3-vitb16-pretrain-lvd1689m__5931719e67bbdb9737e363e781fb0c67687896bc.json": "dc9f5bdf8224be3d89916b678204371a801b448000ef25e9028708b087a40879",
+  "token_cache/val__facebook-dinov3-vitb16-pretrain-lvd1689m__5931719e67bbdb9737e363e781fb0c67687896bc.npz": "7e4a04c18f5e4dc90451721653197c3c68869fa5fb058eb33b545137c05787e6",
+  "token_cache/val__facebook-dinov3-vitb16-pretrain-lvd1689m__5931719e67bbdb9737e363e781fb0c67687896bc.json": "511e01c85cee2ca4fd5f862606f86829a0a7f1ee49fc91715a4cafabf73dd1d0",
+  "token_cache/train_stats__facebook-dinov3-vitb16-pretrain-lvd1689m__5931719e67bbdb9737e363e781fb0c67687896bc.npz": "c6a06840f613cc3b8ccf468cbb9d4045cefb6423cf6e7d577191c5fd0a2af144",
+  "token_cache/train_stats__facebook-dinov3-vitb16-pretrain-lvd1689m__5931719e67bbdb9737e363e781fb0c67687896bc.json": "cfeba2d34f4be23d330bd86931c15bc208bb7f5f3ca8ce465113708cafc2fe0c"
+ }
+}
