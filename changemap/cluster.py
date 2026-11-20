@@ -184,6 +184,71 @@ exit $RC
 """
 
 
+def render_map_latents_sbatch(sha: str, tier: str, splits=("train", "val"), time: str = "02:00:00", mem: str = "32G",
+                              cpus: int = 4, home: str = HOME, encoder: str = "dinov3") -> str:
+    """One GPU job: pre-build per-split Map Latent caches and training stats under `<tier>/token_cache/`."""
+    lc.submit_command("train", sha, {}, time)
+    if "test" in splits:
+        raise ValueError("map-latents job encodes train/val only; never the test split")
+    q = shlex.quote
+    split_args = " ".join(q(s) for s in splits)
+    return f"""#!/bin/bash
+# Change Map Diffusion: pre-build Map Latent token caches and train stats on one {PARTITION} GPU.
+# Rendered by `python -m changemap.cluster render-map-latents`.
+#SBATCH --job-name=changemap-map-latents
+#SBATCH --partition={PARTITION}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --mem={mem}
+#SBATCH --time={time}
+#SBATCH --output={home}/logs/%x.%j.out
+#SBATCH --error={home}/logs/%x.%j.err
+
+set -uo pipefail
+P={q(home)}
+SHA={sha}
+CODE=$P/code/$SHA
+TIER={q(tier)}
+SIF={SIF}
+SIF_SHA256={SIF_SHA256}
+
+mkdir -p "$P/logs"
+[ -e "$CODE/changemap/cli.py" ] || {{ echo "code not staged: $CODE"; exit 2; }}
+[ -e "$TIER/train_targets.jsonl" ] && [ -e "$TIER/train_index.jsonl" ] || {{ echo "tier not staged: $TIER"; exit 2; }}
+ls "$P"/hf/hub/models--facebook--dinov3-vitb16-pretrain-lvd1689m/snapshots/*/model.safetensors >/dev/null 2>&1 \\
+    || {{ echo "DINOv3 weights not staged under $P/hf/hub"; exit 2; }}
+[ -e "$SIF" ] || {{ echo "missing image $SIF"; exit 2; }}
+[ "$(sha256sum "$SIF" | cut -d' ' -f1)" = "$SIF_SHA256" ] || {{ echo "image checksum differs from the pinned one"; exit 2; }}
+
+unset PYTHONHOME PYTHONPATH CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PYTHON_EXE
+export PYTHONNOUSERSITE=1
+export HF_HOME=$P/hf HF_HUB_OFFLINE=1 TORCH_COMPILE_DISABLE=1 USE_TF=0
+export CHANGEMAP_LATENTDIT_ROOT=${{CHANGEMAP_LATENTDIT_ROOT:-$P/siblings/latentdit}}
+export CHANGEMAP_DIT2VLM_ROOT=${{CHANGEMAP_DIT2VLM_ROOT:-$P/siblings/dit2vlm}}
+export CHANGE_REGIONS_REPO=${{CHANGE_REGIONS_REPO:-$P/siblings/change_regions}}
+export PYTHONPATH=$CODE
+export CHANGEMAP_COMMIT=$SHA
+
+echo "job $SLURM_JOB_ID sha $SHA node $(hostname) tier $TIER splits {' '.join(splits)}"
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+
+apptainer exec --nv "$SIF" python -m changemap.cli map-latents --tier "$TIER" --splits {split_args} \\
+    --encoder {q(encoder)} --device cuda
+"""
+
+
+def _add_map_latents_args(s) -> None:
+    s.add_argument("--sha", required=True)
+    s.add_argument("--tier", required=True)
+    s.add_argument("--splits", nargs="+", choices=("train", "val"), default=["train", "val"])
+    s.add_argument("--encoder", default="dinov3")
+    s.add_argument("--time", default="02:00:00")
+    s.add_argument("--mem", default="32G")
+    s.add_argument("--cpus", type=int, default=4)
+
+
 def _add_score_args(s) -> None:
     s.add_argument("--sha", required=True)
     s.add_argument("--tier", required=True)
@@ -233,9 +298,18 @@ def main(argv=None) -> int:
     ss.add_argument("--dependency", metavar="afterok:ID1:ID2...")
     ss.add_argument("--note", default="")
     ss.add_argument("--dry-run", action="store_true", help="print the sbatch command; render and submit nothing")
+    rml = sub.add_parser("render-map-latents")
+    _add_map_latents_args(rml)
+    rml.add_argument("--script", type=Path, help="where to write the sbatch file (default stdout)")
+    sml = sub.add_parser("submit-map-latents")
+    _add_map_latents_args(sml)
+    sml.add_argument("--note", default="")
+    sml.add_argument("--dry-run", action="store_true", help="print the sbatch command; render and submit nothing")
     a = p.parse_args(argv)
     if a.cmd in ("render-score", "submit-score"):
         return _score_main(a, p)
+    if a.cmd in ("render-map-latents", "submit-map-latents"):
+        return _map_latents_main(a, p)
     try:
         text = render_sbatch(a.arm, a.sha, a.tier, a.out, a.steps, a.time, a.mem, a.cpus, a.home, a.train_args)
         script = Path(a.home) / "scripts" / f"train_{a.arm}.sbatch" if a.cmd == "submit" else a.script
@@ -292,6 +366,33 @@ def _score_main(a, p) -> int:
     job_id = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip().split(";")[0]
     lc.append(Path(a.home) / "ledger.tsv",
               lc.ledger_row(job_id, "changemap-score", PARTITION, 1, a.sha, lc.IMAGE_TAG, lc._now(), a.note))
+    print(job_id)
+    return 0
+
+
+def _map_latents_main(a, p) -> int:
+    try:
+        text = render_map_latents_sbatch(a.sha, a.tier, a.splits, a.time, a.mem, a.cpus, a.home, a.encoder)
+        script = Path(a.home) / "scripts" / "map_latents.sbatch" if a.cmd == "submit-map-latents" else a.script
+        if a.cmd == "submit-map-latents":
+            cmd = lc.submit_command("train", a.sha, {}, a.time, a.home, a.mem)[:-1]
+            cmd = [c for c in cmd if not c.startswith("--job-name=")] + ["--job-name=changemap-map-latents", str(script)]
+    except ValueError as e:
+        p.exit(2, f"changemap.cluster: error: {e}\n")
+    if a.cmd == "render-map-latents":
+        if script:
+            Path(script).write_text(text)
+        else:
+            print(text, end="")
+        return 0
+    print(shlex.join(cmd))
+    if a.dry_run:
+        return 0
+    Path(script).parent.mkdir(parents=True, exist_ok=True)
+    Path(script).write_text(text)
+    job_id = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip().split(";")[0]
+    lc.append(Path(a.home) / "ledger.tsv",
+              lc.ledger_row(job_id, "changemap-map-latents", PARTITION, 1, a.sha, lc.IMAGE_TAG, lc._now(), a.note))
     print(job_id)
     return 0
 

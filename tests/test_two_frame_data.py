@@ -142,3 +142,48 @@ def test_duplicate_step_pair_ids_train_sample_score_end_to_end(tf_ctx, tmp_path,
         assert list(rep["rows"]["frame_caption"]["per_window"]) == ["t7_3-4@t7_2", "t7_3-4@t7_3", "t7_6-7@t7_5"]
         assert rep["rows"]["frame_caption"]["summary"]["all"]["n"] == 3
 
+
+def test_map_latents_cli_prebuilds_caches_and_stats_and_cluster_renders_sbatch(tf_ctx, tmp_path, fake_encoder):
+    from changemap import cluster
+
+    tier = tf_ctx["tier"]
+    assert cli(["map-latents", "--tier", str(tier), "--splits", "train", "val"]) == 0
+    cache_dir = tier / "token_cache"
+    train_npz = next(cache_dir.glob("train__*.npz"))
+    val_npz = next(cache_dir.glob("val__*.npz"))
+    stats_npz = next(cache_dir.glob("train_stats__*.npz"))
+    for p in (train_npz, val_npz, stats_npz):
+        side = json.loads(p.with_suffix(".json").read_text())
+        assert side["sha256"] == sha(p)
+    # Duplicate Step Pair ids are encoded once, not twice (train has 2 unique pairs, val has 2 unique pairs)
+    assert fake_encoder.frames_encoded() == 4
+
+    # Refuses test split without --verdict
+    with pytest.raises(SystemExit) as e:
+        cli(["map-latents", "--tier", str(tier), "--splits", "test"])
+    assert e.value.code == 2
+
+    # Subsequent map_latent train + score hits the pre-built cache (0 true-map encodes; <=1 for all-black floor)
+    fake_encoder.reset()
+    assert cli(["train", "--tier", str(tier), "--target", "map_latent", "--arm", "unconditional",
+                "--steps", "2", "--batch", "2", "--hidden", "32", "--depth", "2", "--heads", "2",
+                "--out", str(tmp_path / "run_ml")]) == 0
+    assert fake_encoder.frames_encoded() == 0
+    assert cli(["score", "--tier", str(tier), "--split", "val", "--target", "map_latent",
+                "--out", str(tmp_path / "rep_ml")]) == 0
+    assert fake_encoder.frames_encoded() <= 1
+
+    # Cluster render-map-latents and submit-map-latents --dry-run
+    script = tmp_path / "map_latents.sbatch"
+    sha40 = "a" * 40
+    assert cluster.main(["render-map-latents", "--sha", sha40, "--tier", "/scratch/tier",
+                         "--script", str(script)]) == 0
+    txt = script.read_text()
+    assert "#SBATCH --partition=a100" in txt
+    assert cluster.SIF_SHA256 in txt
+    assert "HF_HUB_OFFLINE=1" in txt
+    assert "python -m changemap.cli map-latents" in txt
+    assert "--device cuda" in txt
+    assert cluster.main(["submit-map-latents", "--sha", sha40, "--tier", "/scratch/tier", "--dry-run"]) == 0
+
+

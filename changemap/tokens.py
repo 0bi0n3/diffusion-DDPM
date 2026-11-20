@@ -182,6 +182,31 @@ def train_map_latent_stats(tier, encoder) -> tuple[tuple[np.ndarray, np.ndarray]
     return map_latent_stats(tier, encoder, [w.id for w in train_w], train_maps)
 
 
+def build_map_latents(tier, splits=("train", "val"), encoder_kind: str = "dinov3", device: str = "cpu",
+                      verdict: bool = False) -> dict:
+    """Pre-build per-split Map Latent caches and training Map Latent stats under `<tier>/token_cache/`."""
+    from .data import TEST, load_index, load_windows
+    for s in splits:
+        if s == TEST and not verdict:
+            raise PermissionError("the test split is read only for a verdict: pass --verdict")
+    enc = load_encoder(encoder_kind, device)
+    out = {"encoder": {"kind": encoder_kind, "id": enc.id, "revision": enc.revision}, "splits": {}}
+    train_w = train_maps = None
+    for s in splits:
+        wins = load_windows(tier, s, verdict)
+        regs = load_index(tier, s, wins, verdict)
+        maps = np.stack([frames.change_mask(r) for r in regs])
+        true_tokens(tier, s, enc, [w.id for w in wins], map_rgb(maps))
+        cp = cache_path(tier, s, enc)
+        out["splits"][s] = {"windows": len(wins), "cache": str(cp), "sha256": _file_sha(cp)}
+        if s == "train":
+            train_w, train_maps = wins, maps
+    if train_w is not None:
+        _, sp = map_latent_stats(tier, enc, [w.id for w in train_w], train_maps)
+        out["train_stats"] = {"path": str(sp), "sha256": _file_sha(sp)}
+    return out
+
+
 def score_samples(encoder, tokens_true, region, rgb, mask, stats=None) -> dict:
     """Token metrics {name: (n, k)} of generated samples rgb (n, k, 224, 400, 3), mask (n, k, 224, 400)."""
     n, k = rgb.shape[:2]

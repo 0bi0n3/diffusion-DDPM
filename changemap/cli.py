@@ -116,6 +116,13 @@ def _parser() -> argparse.ArgumentParser:
                    help="fail if training loss exceeds this multiple of its running minimum (default 10)")
     g.add_argument("--max-grad-norm", type=float, default=100.0,
                    help="fail if pre-clip gradient norm exceeds this value (default 100)")
+
+    ml = sub.add_parser("map-latents", help="pre-build per-split Map Latent caches and training stats")
+    ml.add_argument("--tier", required=True, type=Path)
+    ml.add_argument("--splits", nargs="+", choices=("train", "val", "test"), default=["train", "val"])
+    ml.add_argument("--encoder", choices=tokens.KINDS, default="dinov3")
+    ml.add_argument("--device", default="cpu", help=DEVICE_HELP)
+    ml.add_argument("--verdict", action="store_true", help="allow reading the test split")
     return p
 
 
@@ -160,6 +167,12 @@ def main(argv=None) -> int:
                 print(f"FAIL: {res.reason}", file=sys.stderr)
                 return 1
             print(f"PASS: {res.reason}")
+        elif a.cmd == "map-latents":
+            res = tokens.build_map_latents(a.tier, a.splits, a.encoder, a.device, a.verdict)
+            for s, info in res["splits"].items():
+                print(f"{s}: {info['windows']} Step Pairs -> {info['cache']}")
+            if "train_stats" in res:
+                print(f"train_stats -> {res['train_stats']['path']}")
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
