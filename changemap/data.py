@@ -24,6 +24,11 @@ SPLITS = ("train", "val")
 TEST = "test"
 
 
+def window_key(id_: str, source_window_id: str | None = None) -> str:
+    """Unique row key: `<id>@<source_window_id>` for two-frame Step Pairs, else `<id>`."""
+    return f"{id_}@{source_window_id}" if source_window_id else id_
+
+
 @dataclass(frozen=True)
 class Window:
     id: str
@@ -33,6 +38,10 @@ class Window:
     previous_frame: str | None = None        # optional image path of the Previous Frame (F8), for panels only
     previous_regions: tuple | None = None    # Significant Regions of the F7 -> F8 Step Pair; None when there is no previous pair
     source_window_id: str | None = None      # parent Window id for two-frame Step Pairs (None for Last-Step tiers)
+
+    @property
+    def key(self) -> str:
+        return window_key(self.id, self.source_window_id)
 
     @property
     def no_change(self) -> bool:
@@ -92,7 +101,8 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
         if status not in ("target", "no_change"):
             raise ValueError(f"{row['id']}: target_status {status!r} has no Grid Map")
         regions = significant_regions(row) if status == "target" else ()
-        prev = external[row["id"]] if row["id"] in external else row.get("previous")
+        key = window_key(row["id"], row.get("source_window_id"))
+        prev = external[key] if key in external else (external[row["id"]] if row["id"] in external else row.get("previous"))
         out.append(Window(row["id"], regions, hints.change_map(regions, GRID).numpy(), previous_grid_map(prev),
                           row.get("previous_frame"), previous_regions(prev), row.get("source_window_id")))
     return out
@@ -115,7 +125,7 @@ def load_index(tier, split: str, windows: list[Window], verdict: bool = False) -
         by_win[r["window"]] = tuple(tuple(float(v) for v in b) for b in r["regions_px_1920x1080"])
     out = []
     for w in windows:
-        key = f"{w.id}@{w.source_window_id}" if w.source_window_id else w.id
+        key = w.key
         if key not in by_win:
             raise ValueError(f"{path}: no index row for {key!r}")
         regs = by_win[key]

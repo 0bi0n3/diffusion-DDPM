@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from . import siblings, tokens  # noqa: F401
-from .data import TEST
+from .data import TEST, window_key
 
 CLIP_ID = "openai/clip-vit-large-patch14"
 MAX_FRESH = 50
@@ -115,6 +115,15 @@ def _store_index(stores, tutorials) -> dict:
     return idx
 
 
+def input_frame_second(row: dict) -> int:
+    """Input Frame Ft of a Step Pair: frames[-2] is F8 on 10-frame Last-Step rows and F0 on 2-frame rows."""
+    return int(row["frames"][-2])
+
+
+def row_key(row: dict) -> str:
+    return window_key(row["id"], row.get("source_window_id"))
+
+
 def build_context(tier, split: str, out, stores, stats_path, verdict: bool = False, encoder_kind: str = "dinov3",
                   encoder_device: str = "cpu", clip_device: str = "cpu", max_fresh: int = MAX_FRESH,
                   verify_store: bool = False) -> dict:
@@ -125,7 +134,7 @@ def build_context(tier, split: str, out, stores, stats_path, verdict: bool = Fal
     encoders = {(h[2], h[3]) for h in idx.values()}
     where = []                                   # per row: (store, row index) or None
     for r in rows:
-        sec = int(r["frames"][8])
+        sec = input_frame_second(r)
         hit = idx.get(r["tutorial"])
         where.append((hit[0], hit[1][sec]) if hit and sec in hit[1] else None)
     fresh = [i for i, w in enumerate(where) if w is None]
@@ -151,9 +160,10 @@ def build_context(tier, split: str, out, stores, stats_path, verdict: bool = Fal
         enc_info = {"id": enc.id, "revision": enc.revision}
         for i in fresh:
             r = rows[i]
-            _, frames = next(decode_chunks(r["video"], [int(r["frames"][8])]), (None, None))
+            sec = input_frame_second(r)
+            _, frames = next(decode_chunks(r["video"], [sec]), (None, None))
             if not frames:
-                raise ValueError(f"{r['id']}: second {r['frames'][8]} cannot be decoded from {r['video']}")
+                raise ValueError(f"{row_key(r)}: second {sec} cannot be decoded from {r['video']}")
             f8[i] = np.asarray(enc.encode([frames[0]])[0], np.float32)
     clip = load_clip(clip_device)
     caption = clip.encode([caption_text(r) for r in rows])
@@ -163,9 +173,10 @@ def build_context(tier, split: str, out, stores, stats_path, verdict: bool = Fal
     f8 = ((f8 - mean) / std).astype(np.float16)                       # normalised exactly once, here
     Path(out).mkdir(parents=True, exist_ok=True)
     path = Path(out) / f"{split}_context.npz"
-    np.savez(path, ids=np.array([r["id"] for r in rows]), f8=f8, caption=np.asarray(caption).astype(np.float16))
+    keys = [row_key(r) for r in rows]
+    np.savez(path, ids=np.array(keys), f8=f8, caption=np.asarray(caption).astype(np.float16))
     entry = {"windows": len(rows), "from_store": len(rows) - len(fresh), "encoded_fresh": len(fresh),
-             "fresh_ids": [rows[i]["id"] for i in fresh], "fresh_encoder": enc_info,
+             "fresh_ids": [keys[i] for i in fresh], "fresh_encoder": enc_info,
              "store_encoders": sorted(f"{a}@{b}" for a, b in encoders), "stores": [str(s) for s in stores],
              "stats_sha256": sha256(stats_path), "normalisation": "(x - mean) / std, once, float32 then float16",
              "clip": {"id": clip.id, "revision": clip.revision}, "caption": "goal. subgoal. action",
@@ -192,7 +203,7 @@ def build_previous(tier, split: str, out, verdict: bool = False) -> dict:
     recs = [previous_record(r) for r in rows]
     Path(out).mkdir(parents=True, exist_ok=True)
     path = Path(out) / f"{split}_previous.jsonl"
-    path.write_text("".join(json.dumps({"id": r["id"], "previous": p}) + "\n" for r, p in zip(rows, recs)))
+    path.write_text("".join(json.dumps({"id": row_key(r), "previous": p}) + "\n" for r, p in zip(rows, recs)))
     entry = {"windows": len(rows), "with_previous": sum(bool(p) and not p.get("dropped") for p in recs),
              "dropped": sum(bool(p) and bool(p.get("dropped")) for p in recs), "none": sum(p is None for p in recs),
              "no_significant_region": sum(bool(p) and not p.get("dropped") and not any(p["box_ok_50_20"]) for p in recs),
