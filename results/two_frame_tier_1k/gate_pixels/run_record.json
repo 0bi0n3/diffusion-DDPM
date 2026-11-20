@@ -1,0 +1,58 @@
+{
+  "code_commit": "f512b16083e7b014bb3cbb6816bd07ad9d7f51dc",
+  "sibling_commits": {
+    "latentdit": "unknown",
+    "dit2vlm": "unknown"
+  },
+  "config": {
+    "target": "change_map_pixels",
+    "arm": "frame_caption",
+    "steps": 1000,
+    "batch": 64,
+    "lr": 0.0001,
+    "hidden": 384,
+    "depth": 12,
+    "heads": 6,
+    "seed": 35,
+    "shift": 4.677071733467427,
+    "tier": "/mnt/fast/nobackup/scratch4weeks/od00383/change_map/two_frame_tier_1k",
+    "n_train_windows": 7103,
+    "device": "cuda",
+    "ema_decay": 0.9999,
+    "grad_clip": 1.0,
+    "qk_norm": true,
+    "warmup": 500,
+    "amp": "auto",
+    "val_every": 500,
+    "val_n": 100,
+    "val_sample_steps": 10,
+    "n_params": 44579008
+  },
+  "data_sha256": {
+    "train_context.npz": "ebf305dc2a66f73472fb59b35c94b965e3ca2317a17c0db869738c8b7646ca0e",
+    "train_index.jsonl": "ab12cbb9647cadc6f91abbc344e6ee7ab117e71065b35d71408d315dffd8bcbc",
+    "train_previous.jsonl": "ac2301c49fe5ed63f7815f2e26f0c881bae57bc6f14be550eb682f7f5b873a0d",
+    "train_targets.jsonl": "e8ec6e175c5e5c3888977efc750579f5440257fd665f2752a88cea30f6d2e3dc",
+    "val_context.npz": "9bc253b53f514ef5772a0c78d65aa8a80cee3aaaddbcaafa336bc925639aaf72",
+    "val_index.jsonl": "285d3bf00fdd1c12a7e3762a5cda8f2e3056e96611132369bbb445d306fdbc57",
+    "val_previous.jsonl": "9ee2c9be1cc7383e6ee066fb89bcc3b40a6310b05ee004f9c1ec9365a4ce38dd",
+    "val_targets.jsonl": "a4bf68d8d38778cc69c5d934dc42ad4f47ca1ed97c5fb77ed19f4ba88595d5f8"
+  },
+  "device": "NVIDIA A100-SXM4-80GB",
+  "status": "finished",
+  "step": 1000,
+  "wall_time_seconds": 443.0433288239874,
+  "peak_memory": {
+    "host_rss_mb": 47157.8359375,
+    "gpu_allocated_mb": 71763.4248046875
+  },
+  "jobs": [
+    {
+      "from_step": 0,
+      "to_step": 1000,
+      "wall_seconds": 441.5503772078082,
+      "status": "finished"
+    }
+  ],
+  "written_at": "2026-11-20T19:20:24+00:00"
+}
