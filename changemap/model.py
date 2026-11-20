@@ -38,10 +38,30 @@ def uses_context(arm: str) -> bool:
     return any(ARMS[arm])
 
 
+class QKNormAttention(nn.Module):
+    """Self-attention wrapping latentdit's Attention with per-head RMSNorm on q and k."""
+
+    def __init__(self, attn: nn.Module):
+        super().__init__()
+        self.num_heads = attn.num_heads
+        self.qkv = attn.qkv
+        self.proj = attn.proj
+        head_dim = attn.qkv.in_features // attn.num_heads
+        self.q_norm = nn.RMSNorm(head_dim, eps=1e-6)
+        self.k_norm = nn.RMSNorm(head_dim, eps=1e-6)
+
+    def forward(self, x):
+        b, n, c = x.shape
+        q, k, v = self.qkv(x).reshape(b, n, 3, self.num_heads, c // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k = self.q_norm(q), self.k_norm(k)
+        x = F.scaled_dot_product_attention(q, k, v)
+        return self.proj(x.transpose(1, 2).reshape(b, n, c))
+
+
 class CrossAttention(nn.Module):
     """Multi-head cross-attention: squares attend to Caption tokens."""
 
-    def __init__(self, dim, num_heads, ctx_dim=CAPTION_CHANNELS):
+    def __init__(self, dim, num_heads, ctx_dim=CAPTION_CHANNELS, qk_norm: bool = False):
         super().__init__()
         assert dim % num_heads == 0
         self.num_heads = num_heads
@@ -49,26 +69,38 @@ class CrossAttention(nn.Module):
         self.q = nn.Linear(dim, dim)
         self.kv = nn.Linear(ctx_dim, 2 * dim)
         self.proj = nn.Linear(dim, dim)
+        if qk_norm:
+            head_dim = dim // num_heads
+            self.q_norm = nn.RMSNorm(head_dim, eps=1e-6)
+            self.k_norm = nn.RMSNorm(head_dim, eps=1e-6)
+        else:
+            self.q_norm = self.k_norm = None
 
     def forward(self, x, ctx):
         b, n, c = x.shape
         h = self.num_heads
         q = self.q(self.norm(x)).reshape(b, n, h, c // h).transpose(1, 2)
         k, v = self.kv(ctx).reshape(b, ctx.shape[1], 2, h, c // h).permute(2, 0, 3, 1, 4)
+        if self.q_norm is not None:
+            q, k = self.q_norm(q), self.k_norm(k)
         return self.proj(F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(b, n, c))
 
 
 class ChangeMapDiT(DiT):
-    def __init__(self, arm: str, hidden_size=384, depth=12, num_heads=6, channels: int = 1):
+    def __init__(self, arm: str, hidden_size=384, depth=12, num_heads=6, channels: int = 1, qk_norm: bool = False):
         super().__init__(grid=GRID, channels=channels, context_channels=FRAME_CHANNELS, hidden_size=hidden_size,
                          depth=depth, num_heads=num_heads)
         self.arm = arm
+        self.qk_norm = qk_norm
         self.use_frame, self.use_caption = ARMS[arm]
+        if qk_norm:
+            for block in self.blocks:
+                block.attn = QKNormAttention(block.attn)
         self.null_frame = nn.Parameter(torch.zeros(*GRID, FRAME_CHANNELS))
         self.null_caption = nn.Parameter(torch.zeros(CAPTION_TOKENS, CAPTION_CHANNELS))
         nn.init.normal_(self.null_frame, std=0.02)
         nn.init.normal_(self.null_caption, std=0.02)
-        self.cross = nn.ModuleList([CrossAttention(hidden_size, num_heads) for _ in range(depth)])
+        self.cross = nn.ModuleList([CrossAttention(hidden_size, num_heads, qk_norm=qk_norm) for _ in range(depth)])
         for m in self.cross:
             nn.init.xavier_uniform_(m.q.weight), nn.init.xavier_uniform_(m.kv.weight)
             nn.init.xavier_uniform_(m.proj.weight)
@@ -101,10 +133,11 @@ class ChangeMapDiT(DiT):
         return self.final_layer(x, c).reshape(b, h, w, self.channels)
 
 
-def build_model(arm: str, hidden: int = 384, depth: int = 12, heads: int = 6, channels: int = 1) -> ChangeMapDiT:
+def build_model(arm: str, hidden: int = 384, depth: int = 12, heads: int = 6, channels: int = 1,
+                qk_norm: bool = False) -> ChangeMapDiT:
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}: choose from {tuple(ARMS)}")
-    return ChangeMapDiT(arm, hidden, depth, heads, channels)
+    return ChangeMapDiT(arm, hidden, depth, heads, channels, qk_norm=qk_norm)
 
 
 def n_params(model: nn.Module) -> int:

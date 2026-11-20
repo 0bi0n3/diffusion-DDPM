@@ -1,4 +1,4 @@
-"""`changemap train | sample | score | run | frames | context | previous`: the one seam."""
+"""`changemap train | sample | score | run | frames | context | previous | gate`: the one seam."""
 from __future__ import annotations
 
 import argparse
@@ -109,6 +109,13 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--lpips-dir", type=Path, help="folder with the LPIPS weights (env CHANGEMAP_LPIPS_DIR)")
     r.add_argument("--device", default="cpu", help=DEVICE_HELP)
     token_options(r)
+
+    g = sub.add_parser("gate", help="check a run's training log for loss or gradient-norm collapse")
+    g.add_argument("--run", required=True, type=Path, help="run directory (containing log.json) or path to log.json")
+    g.add_argument("--max-loss-ratio", type=float, default=10.0,
+                   help="fail if training loss exceeds this multiple of its running minimum (default 10)")
+    g.add_argument("--max-grad-norm", type=float, default=100.0,
+                   help="fail if pre-clip gradient norm exceeds this value (default 100)")
     return p
 
 
@@ -146,6 +153,13 @@ def main(argv=None) -> int:
         elif a.cmd == "score":
             score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target,
                             **token_kwargs(a))
+        elif a.cmd == "gate":
+            from . import gate as gate_mod
+            res = gate_mod.check(a.run, a.max_loss_ratio, a.max_grad_norm)
+            if not res.ok:
+                print(f"FAIL: {res.reason}", file=sys.stderr)
+                return 1
+            print(f"PASS: {res.reason}")
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
