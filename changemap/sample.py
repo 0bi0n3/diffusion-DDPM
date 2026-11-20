@@ -24,7 +24,8 @@ def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: b
     targets.require_same_target(target, cfg.get("target"), f"run {run}")
     tg = targets.get(target)
     windows = load_windows(tier, split, verdict)
-    model = build_model(cfg["arm"], cfg["hidden"], cfg["depth"], cfg["heads"], tg.channels)
+    model = build_model(cfg["arm"], cfg["hidden"], cfg["depth"], cfg["heads"], tg.channels,
+                        qk_norm=cfg.get("qk_norm", False))
     model.load_state_dict(torch.load(run / "model.pt", map_location="cpu"))
     model.to(device).eval()
     ids = [w.id for w in windows]
