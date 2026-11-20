@@ -36,7 +36,7 @@ HIGHER_BETTER = frozenset({"token_cosine", "region_token_cosine"})
 METRICS = ("token_cosine", "region_token_cosine", "token_mse")
 SCALE = 4                       # 224x400 -> 896x1600
 CHUNK = 16                      # frames upscaled and encoded at once
-EPS = 1e-8
+EPS = 1e-6
 
 
 def load_encoder(kind: str = "dinov3", device: str = "cpu"):
@@ -77,8 +77,9 @@ def cosine_map(a, b) -> np.ndarray:
     """Per-square cosine of token grids (..., 28, 50, C); two (near) zero tokens count as identical (1)."""
     a, b = np.asarray(a, np.float32), np.asarray(b, np.float32)
     na, nb = np.linalg.norm(a, axis=-1), np.linalg.norm(b, axis=-1)
-    cos = (a * b).sum(-1) / np.maximum(na * nb, EPS)
-    return np.where((na < EPS) & (nb < EPS), 1.0, cos)
+    za, zb = na < EPS, nb < EPS
+    cos = np.where(za | zb, 0.0, (a * b).sum(-1) / np.maximum(na * nb, EPS))
+    return np.where(za & zb, 1.0, cos)
 
 
 def token_scores(pred_tokens, true_tokens, region, stats=None) -> dict:

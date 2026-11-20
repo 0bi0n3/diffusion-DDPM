@@ -95,22 +95,37 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
         raise PermissionError("the test split is read only for a verdict: pass --verdict")
     if split not in SPLITS and split != TEST:
         raise ValueError(f"unknown split {split!r}")
+    rows = [json.loads(line) for line in (Path(tier) / f"{split}_targets.jsonl").read_text().splitlines() if line.strip()]
+    in_window = {}
+    for row in rows:
+        src, fr = row.get("source_window_id"), row.get("frames")
+        if src and isinstance(fr, list) and len(fr) == 2:
+            status = row["target_status"]
+            key = (src, int(fr[0]), int(fr[1]))
+            if status == "dropped":
+                in_window[key] = {"dropped": True}
+            elif status == "target":
+                in_window[key] = {"regions": row["regions"], "box_ok_50_20": row["box_ok_50_20"]}
+            elif status == "no_change":
+                in_window[key] = {"regions": [], "box_ok_50_20": []}
     out = []
     external = read_previous(tier, split)
-    for line in (Path(tier) / f"{split}_targets.jsonl").read_text().splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
+    for row in rows:
         status = row["target_status"]
         if status == "dropped":
             continue
         if status not in ("target", "no_change"):
             raise ValueError(f"{row['id']}: target_status {status!r} has no Grid Map")
         regions = significant_regions(row) if status == "target" else ()
-        key = window_key(row["id"], row.get("source_window_id"))
-        prev = external[key] if key in external else (external[row["id"]] if row["id"] in external else row.get("previous"))
+        src, fr = row.get("source_window_id"), row.get("frames")
+        prev_key = (src, int(fr[0]) - 1, int(fr[1]) - 1) if (src and isinstance(fr, list) and len(fr) == 2) else None
+        if prev_key in in_window:
+            prev = in_window[prev_key]
+        else:
+            key = window_key(row["id"], src)
+            prev = external[key] if key in external else (external[row["id"]] if row["id"] in external else row.get("previous"))
         out.append(Window(row["id"], regions, hints.change_map(regions, GRID).numpy(), previous_grid_map(prev),
-                          row.get("previous_frame"), previous_regions(prev), row.get("source_window_id")))
+                          row.get("previous_frame"), previous_regions(prev), src))
     return out
 
 
