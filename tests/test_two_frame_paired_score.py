@@ -60,3 +60,46 @@ def test_paired_score_combines_pixel_and_map_latent_runs(tmp_path):
                    "--samples", str(pix_smp / "frame_caption.npz"),
                    "--latent-samples", str(lat_smp / "frame_caption.npz"),
                    "--token-metrics", "off", "--out", str(tmp_path / "bad2")])
+
+
+def test_cluster_two_frame_train_job_name_and_paired_score_sbatch(tmp_path):
+    from changemap import cluster
+
+    sha = "a" * 40
+    # 1. render with --job-name distinguishes pixel vs latent frame_caption runs
+    pix_sbatch = tmp_path / "pix.sbatch"
+    assert cluster.main(["render", "--arm", "frame_caption", "--job-name", "tf-pixels", "--sha", sha,
+                         "--tier", "/scratch/two_frame_tier_1k", "--out", "/runs/pix", "--steps", "20000",
+                         "--mem", "64G", "--train-args", "--target change_map_pixels --qk-norm on --grad-clip 1.0",
+                         "--script", str(pix_sbatch)]) == 0
+    txt = pix_sbatch.read_text()
+    assert "#SBATCH --job-name=tf-pixels" in txt
+    assert "--run-name tf-pixels" in txt
+    assert "--target change_map_pixels --qk-norm on --grad-clip 1.0" in txt
+    assert "#SBATCH --mem=64G" in txt
+
+    assert cluster.main(["--home", str(tmp_path), "submit", "--dry-run", "--arm", "frame_caption",
+                         "--job-name", "tf-latent", "--sha", sha, "--tier", "/scratch/two_frame_tier_1k",
+                         "--out", "/runs/lat", "--steps", "20000", "--mem", "64G",
+                         "--train-args", "--target map_latent --qk-norm on --grad-clip 1.0"]) == 0
+
+    # 2. render-two-frame-score and submit-two-frame-score --dry-run
+    score_sbatch = tmp_path / "two_frame_score.sbatch"
+    assert cluster.main(["render-two-frame-score", "--sha", sha, "--tier", "/scratch/two_frame_tier_1k",
+                         "--pixel-run", "/runs/pix", "--latent-run", "/runs/lat",
+                         "--samples", "/samples", "--out", "/report", "--lpips-dir", "/lpips",
+                         "--script", str(score_sbatch)]) == 0
+    stxt = score_sbatch.read_text()
+    assert "#SBATCH --partition=a100" in stxt
+    assert "#SBATCH --mem=64G" in stxt
+    assert cluster.SIF_SHA256 in stxt
+    assert "--target change_map_pixels" in stxt
+    assert "--target map_latent" in stxt
+    assert "--latent-samples" in stxt
+    assert "--latent-stats" not in stxt
+
+    assert cluster.main(["--home", str(tmp_path), "submit-two-frame-score", "--dry-run", "--sha", sha,
+                         "--tier", "/scratch/two_frame_tier_1k", "--pixel-run", "/runs/pix",
+                         "--latent-run", "/runs/lat", "--samples", "/samples", "--out", "/report",
+                         "--lpips-dir", "/lpips", "--dependency", "afterok:111:222"]) == 0
+
