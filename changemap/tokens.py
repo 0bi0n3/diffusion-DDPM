@@ -121,7 +121,11 @@ def true_tokens(tier, split, encoder, ids, true_rgb) -> np.ndarray:
             raise ValueError(f"{path}: token cache checksum mismatch (delete it to re-encode)")
         z = np.load(path)
         have = {(str(i), str(s)): t for i, s, t in zip(z["ids"], z["input_sha256"], z["tokens"])}
-    todo = [i for i, (w, s) in enumerate(zip(ids, shas)) if (w, s) not in have]
+    todo, seen = [], set()
+    for i, (w, s) in enumerate(zip(ids, shas)):
+        if (w, s) not in have and (w, s) not in seen:
+            todo.append(i)
+            seen.add((w, s))
     if todo:
         for i, t in zip(todo, encode_frames(encoder, true_rgb[todo])):
             have[(ids[i], shas[i])] = t

@@ -15,23 +15,24 @@ from pathlib import Path
 import numpy as np
 
 from . import metrics, panels, report, targets, tokens
-from .data import load_windows
+from .data import load_windows, window_ids
 
 NO_PREVIOUS_RULE = "A Window with no previous Step Pair (absent or dropped) is scored as all black."
 ARM_ORDER = ("unconditional", "caption_only", "frame_only", "frame_caption")
 PANEL_WINDOWS = 4
 
 
-def _row(kind, pw, windows, higher_better) -> dict:
+def _row(kind, pw, windows, higher_better, ids=None) -> dict:
     """pw: {metric: (n, k)} per sample, NaN where undefined (None in the JSON)."""
     n, k = next(iter(pw.values())).shape
     nc = np.array([w.no_change for w in windows])
     hb = higher_better
+    ids = ids if ids is not None else window_ids(windows)
     summary = {"all": metrics.summarise(pw, np.ones(n, bool), hb), "change": metrics.summarise(pw, ~nc, hb),
                "no_change": metrics.summarise(pw, nc, hb)}
     return {"kind": kind, "k": k, "summary": summary,
-            "per_window": {w.id: {m: [None if np.isnan(v) else float(v) for v in pw[m][i]] for m in pw}
-                           for i, w in enumerate(windows)}}
+            "per_window": {wid: {m: [None if np.isnan(v) else float(v) for v in pw[m][i]] for m in pw}
+                           for i, wid in enumerate(ids)}}
 
 
 def _comparisons(values: dict, arms: list, tg, compare_metrics=None, groups=None) -> list:
@@ -93,7 +94,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     extra_cmp = ("region_token_cosine",) if (token_metrics and "region_token_cosine" not in tg.compare_metrics) else ()
     compare_metrics = tg.compare_metrics + extra_cmp
     windows = load_windows(tier, split, verdict)
-    ids = [w.id for w in windows]
+    ids = window_ids(windows)
     if is_latent and stats is None:
         stats, sp = tokens.train_map_latent_stats(tier, enc)
         stats_src = str(sp)
@@ -113,10 +114,10 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     n = len(windows)
     if token_metrics and not is_latent:
         if tg.name == "masked_frame":
-            true_tok = tokens.true_tokens(tier, split, enc, ids, truth["rgb"])
+            true_tok = tokens.true_tokens(tier, split, enc, [w.id for w in windows], truth["rgb"])
             region = truth["grid"] > 0
         else:
-            true_tok = tokens.true_tokens(tier, split, enc, ids, tokens.map_rgb(truth["maps"]))
+            true_tok = tokens.true_tokens(tier, split, enc, [w.id for w in windows], tokens.map_rgb(truth["maps"]))
             region = np.stack([metrics.pool_mask(m) > 0 for m in truth["maps"]])
             if stats is None:
                 stats, sp = tokens.train_map_latent_stats(tier, enc)
@@ -133,7 +134,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
                     pw.update(tokens.score_samples(enc, true_tok, region, smp["rgb"], smp["mask"], stats))
                 else:
                     pw.update(tokens.score_maps(enc, true_tok, region, smp["maps"], stats))
-            rows[name] = _row(kind, pw, windows, higher_better)
+            rows[name] = _row(kind, pw, windows, higher_better, ids)
             values[name] = {"single": {m: metrics.mean_ignoring_nan(pw[m], axis=1) for m in pw},
                             "best_of_k": {m: metrics.best_of_k(pw[m], m in higher_better) for m in pw}}
             if kind == "arm":

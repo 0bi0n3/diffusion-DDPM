@@ -29,6 +29,12 @@ def window_key(id_: str, source_window_id: str | None = None) -> str:
     return f"{id_}@{source_window_id}" if source_window_id else id_
 
 
+def window_ids(windows: list[Window]) -> list[str]:
+    """Per-row unique identifiers: `w.id` when unique, else `w.key` (`<id>@<source_window_id>`)."""
+    ids = [w.id for w in windows]
+    return ids if len(set(ids)) == len(ids) else [w.key for w in windows]
+
+
 @dataclass(frozen=True)
 class Window:
     id: str
@@ -154,10 +160,16 @@ def load_context(tier, split: str, ids, verdict: bool = False) -> tuple[np.ndarr
         raise ValueError(f"{path} not found: Conditioning Arms that read context need it (format: see changemap.data)")
     z = np.load(path)
     row = {str(i): j for j, i in enumerate(z["ids"])}
-    missing = [i for i in ids if i not in row]
+    idx, missing = [], []
+    for i in ids:
+        if i in row:
+            idx.append(row[i])
+        elif "@" in i and i.split("@", 1)[0] in row:
+            idx.append(row[i.split("@", 1)[0]])
+        else:
+            missing.append(i)
     if missing:
         raise ValueError(f"{path} has no context for Windows {missing[:3]}")
-    idx = [row[i] for i in ids]
     return z["f8"][idx].astype(np.float32), z["caption"][idx].astype(np.float32)
 
 def mean_grid_map(tier) -> np.ndarray:

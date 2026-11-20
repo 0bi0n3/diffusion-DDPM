@@ -110,3 +110,35 @@ def test_context_and_previous_support_two_frame_input_frame_and_duplicate_ids(tf
     assert list(prev) == ["t7_3-4@t7_2", "t7_3-4@t7_3", "t7_4-5@t7_3"]
     wins = data.load_windows(tier, "train")
     assert len(wins) == 3 and wins[0].has_previous and wins[1].has_previous
+
+
+def test_duplicate_step_pair_ids_train_sample_score_end_to_end(tf_ctx, tmp_path, fake_encoder):
+    """A two-frame tier whose train and val splits contain duplicate Step Pair ids under different source_window_ids
+    trains, samples, and scores all rows without overwriting entries in context, samples, or report per_window."""
+    tier = tf_ctx["tier"]
+    # Write 768-dim context keyed by composite Step Pair key (as real `changemap context` produces for DINOv3 + CLIP)
+    g = np.random.default_rng(19)
+    for split, keys in (("train", ["t7_3-4@t7_2", "t7_3-4@t7_3", "t7_4-5@t7_3"]),
+                        ("val", ["t7_3-4@t7_2", "t7_3-4@t7_3", "t7_6-7@t7_5"])):
+        np.savez(tier / f"{split}_context.npz",
+                 ids=np.array(keys),
+                 f8=g.standard_normal((len(keys), 28, 50, 768)).astype(np.float16),
+                 caption=g.standard_normal((len(keys), 77, 768)).astype(np.float16))
+
+    small = ["--hidden", "32", "--depth", "2", "--heads", "2"]
+    for target in ("change_map_pixels", "map_latent"):
+        run, samples, rep_dir = tmp_path / f"run_{target}", tmp_path / f"smp_{target}", tmp_path / f"rep_{target}"
+        assert cli(["train", "--tier", str(tier), "--target", target, "--arm", "frame_caption",
+                    "--steps", "2", "--batch", "2", *small, "--out", str(run)]) == 0
+        assert cli(["sample", "--run", str(run), "--tier", str(tier), "--split", "val",
+                    "--target", target, "--k", "2", "--steps", "2", "--out", str(samples)]) == 0
+        z = np.load(samples / "frame_caption.npz")
+        assert list(z["ids"]) == ["t7_3-4@t7_2", "t7_3-4@t7_3", "t7_6-7@t7_5"]
+        assert cli(["score", "--tier", str(tier), "--split", "val", "--target", target,
+                    "--lpips-dir", str(tmp_path), "--samples", str(samples), "--out", str(rep_dir)]) == 0
+        rep = json.loads((rep_dir / "report.json").read_text())
+        assert rep["n_windows"] == 3
+        assert rep["window_ids"] == ["t7_3-4@t7_2", "t7_3-4@t7_3", "t7_6-7@t7_5"]
+        assert list(rep["rows"]["frame_caption"]["per_window"]) == ["t7_3-4@t7_2", "t7_3-4@t7_3", "t7_6-7@t7_5"]
+        assert rep["rows"]["frame_caption"]["summary"]["all"]["n"] == 3
+
