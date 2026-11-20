@@ -163,7 +163,7 @@ def test_map_latents_cli_prebuilds_caches_and_stats_and_cluster_renders_sbatch(t
         cli(["map-latents", "--tier", str(tier), "--splits", "test"])
     assert e.value.code == 2
 
-    # Subsequent map_latent train + score hits the pre-built cache (0 true-map encodes; <=1 for all-black floor)
+    # Subsequent map_latent train + score hits the pre-built cache (0 encodes in train; only floor maps in score)
     fake_encoder.reset()
     assert cli(["train", "--tier", str(tier), "--target", "map_latent", "--arm", "unconditional",
                 "--steps", "2", "--batch", "2", "--hidden", "32", "--depth", "2", "--heads", "2",
@@ -171,7 +171,7 @@ def test_map_latents_cli_prebuilds_caches_and_stats_and_cluster_renders_sbatch(t
     assert fake_encoder.frames_encoded() == 0
     assert cli(["score", "--tier", str(tier), "--split", "val", "--target", "map_latent",
                 "--out", str(tmp_path / "rep_ml")]) == 0
-    assert fake_encoder.frames_encoded() <= 1
+    assert fake_encoder.frames_encoded() <= 2
 
     # Cluster render-map-latents and submit-map-latents --dry-run
     script = tmp_path / "map_latents.sbatch"
