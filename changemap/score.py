@@ -14,8 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import frames, metrics, panels, report, targets, tokens
-from .data import load_index, load_windows
+from . import metrics, panels, report, targets, tokens
+from .data import load_windows
 
 NO_PREVIOUS_RULE = "A Window with no previous Step Pair (absent or dropped) is scored as all black."
 ARM_ORDER = ("unconditional", "caption_only", "frame_only", "frame_caption")
@@ -95,9 +95,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     windows = load_windows(tier, split, verdict)
     ids = [w.id for w in windows]
     if is_latent and stats is None:
-        train_w = load_windows(tier, "train")
-        train_maps = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)])
-        stats, sp = tokens.map_latent_stats(tier, enc, [w.id for w in train_w], train_maps)
+        stats, sp = tokens.train_map_latent_stats(tier, enc)
         stats_src = str(sp)
     truth = tg.truths(tier, split, windows, verdict, enc=enc, stats=stats) if is_latent else tg.truths(tier, split, windows, verdict)
     model = None if is_latent else metrics.load_lpips(lpips_dir, device)
@@ -121,9 +119,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
             true_tok = tokens.true_tokens(tier, split, enc, ids, tokens.map_rgb(truth["maps"]))
             region = np.stack([metrics.pool_mask(m) > 0 for m in truth["maps"]])
             if stats is None:
-                train_w = load_windows(tier, "train")
-                train_maps = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)])
-                stats, sp = tokens.map_latent_stats(tier, enc, [w.id for w in train_w], train_maps)
+                stats, sp = tokens.train_map_latent_stats(tier, enc)
                 stats_src = str(sp)
     floor_maps = tg.floors(tier, split, windows, truth, enc=enc, stats=stats) if is_latent else tg.floors(tier, split, windows, truth)
     n_no_previous = sum(not w.has_previous for w in windows)

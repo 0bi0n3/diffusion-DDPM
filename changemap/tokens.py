@@ -170,6 +170,14 @@ def map_latent_stats(tier, encoder, train_ids, train_maps) -> tuple[tuple[np.nda
     return (mean, std), path
 
 
+def train_map_latent_stats(tier, encoder) -> tuple[tuple[np.ndarray, np.ndarray], Path]:
+    """Load/compute per-channel training Map Latent stats for `tier` from its verified train index."""
+    from .data import load_index, load_windows
+    train_w = load_windows(tier, "train")
+    train_maps = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)])
+    return map_latent_stats(tier, encoder, [w.id for w in train_w], train_maps)
+
+
 def score_samples(encoder, tokens_true, region, rgb, mask, stats=None) -> dict:
     """Token metrics {name: (n, k)} of generated samples rgb (n, k, 224, 400, 3), mask (n, k, 224, 400)."""
     n, k = rgb.shape[:2]

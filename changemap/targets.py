@@ -320,26 +320,24 @@ class MapLatentTarget:
     def _stats(self, tier, enc, stats=None):
         if stats is not None:
             return stats, None
-        train_w = load_windows(tier, "train")
-        train_maps = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)])
-        return tokens.map_latent_stats(tier, enc, [w.id for w in train_w], train_maps)
+        return tokens.train_map_latent_stats(tier, enc)
 
     def _encode_split(self, tier, split, windows, verdict=False, enc=None, stats=None):
         enc = enc or tokens.load_encoder("dinov3", "cpu")
         regs = load_index(tier, split, windows, verdict)
         maps = np.stack([frames.change_mask(r) for r in regs])
-        st, sp = self._stats(tier, enc, stats)
+        st, _ = self._stats(tier, enc, stats)
         raw = tokens.true_tokens(tier, split, enc, [w.id for w in windows], tokens.map_rgb(maps)).astype(np.float32)
         norm = ((raw - st[0]) / st[1]).astype(np.float32)
-        return raw, norm, maps, st, sp, enc
+        return raw, norm, maps
 
     def tensors(self, tier, split, windows) -> np.ndarray:
         """(n, 28, 50, C) float32 normalised with the training Map Latent mean and std."""
-        _, norm, _, _, _, _ = self._encode_split(tier, split, windows)
+        _, norm, _ = self._encode_split(tier, split, windows)
         return norm
 
     def truths(self, tier, split, windows, verdict: bool = False, enc=None, stats=None) -> dict:
-        raw, norm, maps, _, _, _ = self._encode_split(tier, split, windows, verdict, enc, stats)
+        raw, norm, maps = self._encode_split(tier, split, windows, verdict, enc, stats)
         region = np.stack([metrics.pool_mask(m) > 0 for m in maps])
         return {"latents": norm, "raw_latents": raw, "region": region}
 

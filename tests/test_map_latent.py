@@ -103,6 +103,7 @@ def test_map_latent_train_sample_score_end_to_end_and_not_decoded_report(tftier,
     assert s["best_of_k"]["token_mse"] <= s["single"]["token_mse"] + 1e-12
     md = (rep_dir / "report.md").read_text()
     assert "not decoded" in md.lower()
+    assert "Masked Frames" not in md and "H1 to H5" not in md and "PSNR" not in md and "Panels:" not in md
 
 
 def test_true_map_latent_scores_perfectly_normalises_with_train_stats_and_reuses_cache(tftier, tmp_path, fake_encoder):

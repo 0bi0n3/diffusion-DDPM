@@ -165,6 +165,8 @@ def main(argv=None) -> int:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
             if a.target == "grid_map" and a.token_metrics == "on":
                 raise ValueError(f"--token-metrics on is not available for target {a.target!r}")
+            if a.target == "map_latent" and a.token_metrics == "off":
+                raise ValueError("--token-metrics off is not available for target 'map_latent'")
             samples = []
             for arm in a.arms:
                 run = a.out / "runs" / arm

@@ -35,6 +35,13 @@ TOKEN_METHOD = ("Token-space scoring: generated and true Masked Frames are compo
                 "{mse}. Best of k takes the highest cosine and the lowest Token MSE. True-frame encodings are cached "
                 "({cache}).")
 TOKEN_MSE_NORMALISED = "computed after normalising tokens with the DiT study's latent stats ({stats})"
+MAP_TOKEN_METHOD = ("Latent-space scoring: Change Maps (224x400, white on black, repeated to RGB) are upscaled "
+                    "bicubically x4 to 896x1600 and encoded by the frozen encoder ({enc}), giving 28x50 tokens. "
+                    "Token Cosine is the mean cosine over all 1,400 squares; Region Token Cosine is the same mean "
+                    "over squares where the true pooled map > 0 (n/a for No Change Step Pairs); higher is better for "
+                    "both. Token MSE is {mse}. Best of k takes the highest cosine and the lowest Token MSE. True Map "
+                    "Latents are cached ({cache}).")
+MAP_TOKEN_MSE_NORMALISED = "computed after normalising tokens with the training Map Latent stats ({stats})"
 TOKEN_MSE_RAW = "computed on unnormalised tokens (no --latent-stats given), so it is not comparable with the DiT study's normalised MSE"
 TOKEN_HYPOTHESES = ("Token-space reading of H1 to H5 (secondary): each is also compared on Region Token Cosine, where higher is "
                     "better, so a hypothesis is supported when the lower bound of a - b is above 0.")
@@ -87,8 +94,12 @@ def render(rep: dict) -> str:
     if "tokens" in rep:
         t = rep["tokens"]
         enc = f"{t['encoder']['id']} revision {t['encoder']['revision']}"
-        mse = (TOKEN_MSE_NORMALISED.format(stats=t["latent_stats"]) if t["normalised"] else TOKEN_MSE_RAW)
-        L += [TOKEN_METHOD.format(enc=enc, mse=mse, cache=t["cache"]), "", TOKEN_HYPOTHESES, ""]
+        if two_frame:
+            mse = (MAP_TOKEN_MSE_NORMALISED.format(stats=t["latent_stats"]) if t["normalised"] else TOKEN_MSE_RAW)
+            L += [MAP_TOKEN_METHOD.format(enc=enc, mse=mse, cache=t["cache"]), ""]
+        else:
+            mse = (TOKEN_MSE_NORMALISED.format(stats=t["latent_stats"]) if t["normalised"] else TOKEN_MSE_RAW)
+            L += [TOKEN_METHOD.format(enc=enc, mse=mse, cache=t["cache"]), "", TOKEN_HYPOTHESES, ""]
     if "previous_target_floor" in rep["rows"]:
         L += [f"Previous-Target Floor: {rep['no_previous_rule']} Windows without a usable previous pair: "
               f"{rep['n_no_previous']} of {rep['n_windows']}.", ""]
@@ -102,8 +113,9 @@ def render(rep: dict) -> str:
                 cells = " | ".join(_f(v[m], 2 if m == "psnr" else 5 if m.endswith("mse") else 4) for m in cols)
                 L.append(f"| {ROW_LABELS.get(name, name) if masked else name} | {part} | {s['n']} | {cells} |")
         L.append("")
-    L += ["PSNR is computed from each row's mean MSE, never per Window; it is n/a when the mean MSE is 0.", "",
-          f"## Paired bootstrap ({rep['bootstrap']['resamples']} resamples, seed {rep['bootstrap']['seed']}, 95% interval)",
+    if "mse" in names:
+        L += ["PSNR is computed from each row's mean MSE, never per Window; it is n/a when the mean MSE is 0.", ""]
+    L += [f"## Paired bootstrap ({rep['bootstrap']['resamples']} resamples, seed {rep['bootstrap']['seed']}, 95% interval)",
           "", "Difference a - b of per-Window values; negative means a is better (lower)"
           + ("; for Token Cosine and Region Token Cosine higher is better, so positive means a is better." if "tokens" in rep else "."), "",
           "| a | b | metric | mean diff | 95% low | 95% high |" + (" hypothesis |" if masked else ""),
@@ -124,5 +136,8 @@ def render(rep: dict) -> str:
         dis = [r["hypothesis"] for r in rep["hypothesis_readings"] if r["disagree"]]
         L += ["", f"Disagreement between pixel and token conclusions: {', '.join(dis)}." if dis
               else "No hypothesis has disagreeing pixel and token conclusions."]
-    L += ["", f"Panels: panels/ ({', '.join(rep['panel_windows'])}).", ""]
+    if rep.get("panel_windows"):
+        L += ["", f"Panels: panels/ ({', '.join(rep['panel_windows'])}).", ""]
+    else:
+        L += [""]
     return "\n".join(L)
