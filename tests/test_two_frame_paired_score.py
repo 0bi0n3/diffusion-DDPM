@@ -103,3 +103,28 @@ def test_cluster_two_frame_train_job_name_and_paired_score_sbatch(tmp_path):
                          "--latent-run", "/runs/lat", "--samples", "/samples", "--out", "/report",
                          "--lpips-dir", "/lpips", "--dependency", "afterok:111:222"]) == 0
 
+
+def test_panels_cli_renders_pixel_panels_from_samples_and_report_and_refuses_map_latent(tmp_path):
+    tier = write_two_frame_tier(tmp_path / "tier")
+    pix_run, pix_smp = tmp_path / "run_pix", tmp_path / "smp_pix"
+    rep_dir, panels_dir = tmp_path / "report", tmp_path / "cpu_panels"
+
+    assert cli(["train", "--tier", str(tier), "--target", "change_map_pixels", "--arm", "frame_caption",
+                "--qk-norm", "on", "--steps", "2", "--batch", "2", "--out", str(pix_run), *SMALL]) == 0
+    assert cli(["sample", "--tier", str(tier), "--target", "change_map_pixels", "--run", str(pix_run),
+                "--k", "2", "--steps", "2", "--out", str(pix_smp)]) == 0
+    assert cli(["score", "--tier", str(tier), "--target", "change_map_pixels", "--split", "val",
+                "--samples", str(pix_smp / "frame_caption.npz"), "--out", str(rep_dir), "--encoder", "standin"]) == 0
+
+    assert cli(["panels", "--tier", str(tier), "--target", "change_map_pixels", "--split", "val",
+                "--samples", str(pix_smp / "frame_caption.npz"), "--report", str(rep_dir / "report.json"),
+                "--out", str(panels_dir), "--n", "2"]) == 0
+    pngs = sorted(panels_dir.glob("*.png"))
+    assert len(pngs) == 2
+    assert all(p.stat().st_size > 1000 for p in pngs)
+
+    exits_nonzero(["panels", "--tier", str(tier), "--target", "map_latent", "--split", "val",
+                   "--samples", str(pix_smp / "frame_caption.npz"), "--report", str(rep_dir / "report.json"),
+                   "--out", str(tmp_path / "bad_panels")])
+
+

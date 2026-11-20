@@ -125,6 +125,14 @@ def _parser() -> argparse.ArgumentParser:
     ml.add_argument("--encoder", choices=tokens.KINDS, default="dinov3")
     ml.add_argument("--device", default="cpu", help=DEVICE_HELP)
     ml.add_argument("--verdict", action="store_true", help="allow reading the test split")
+
+    pn = sub.add_parser("panels", help="render CPU panels from existing samples .npz and report.json")
+    common(pn, True)
+    pn.add_argument("--samples", action="append", required=True, type=Path)
+    pn.add_argument("--report", required=True, type=Path)
+    pn.add_argument("--out", required=True, type=Path)
+    pn.add_argument("--n", type=int, default=8)
+    pn.add_argument("--window-ids", nargs="*", default=None)
     return p
 
 
@@ -175,6 +183,11 @@ def main(argv=None) -> int:
                 print(f"{s}: {info['windows']} Step Pairs -> {info['cache']}")
             if "train_stats" in res:
                 print(f"train_stats -> {res['train_stats']['path']}")
+        elif a.cmd == "panels":
+            from . import panels as panels_mod
+            paths = panels_mod.render_from_report(a.tier, a.split, a.target, _npz(a.samples), a.report, a.out,
+                                                  n=a.n, window_ids_override=a.window_ids, verdict=a.verdict)
+            print(f"wrote {len(paths)} panels to {a.out}")
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")
