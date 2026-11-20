@@ -65,6 +65,8 @@ def _parser() -> argparse.ArgumentParser:
     common(c, True)
     c.add_argument("--samples", action="append", default=[], type=Path,
                    help="a samples dir or .npz; repeat for several arms (none: floors only)")
+    c.add_argument("--latent-samples", action="append", default=[], type=Path,
+                   help="optional map_latent samples dir or .npz paired with change_map_pixels scoring")
     c.add_argument("--out", required=True, type=Path)
     c.add_argument("--lpips-dir", type=Path, help="folder with vgg16-397923af.pth and vgg.pth (env CHANGEMAP_LPIPS_DIR)")
     c.add_argument("--device", default="cpu", help=DEVICE_HELP)
@@ -159,7 +161,7 @@ def main(argv=None) -> int:
                   f"{e['dropped']} dropped, {e['none']} none")
         elif a.cmd == "score":
             score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target,
-                            **token_kwargs(a))
+                            latent_samples=_npz(a.latent_samples), **token_kwargs(a))
         elif a.cmd == "gate":
             from . import gate as gate_mod
             res = gate_mod.check(a.run, a.max_loss_ratio, a.max_grad_norm)
