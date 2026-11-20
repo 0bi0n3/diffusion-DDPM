@@ -329,7 +329,8 @@ class MapLatentTarget:
     metrics = ("token_cosine", "region_token_cosine", "token_mse")
     compare_metrics = ("region_token_cosine", "token_mse")
     higher_better = frozenset({"token_cosine", "region_token_cosine"})
-    floor_names = ("all_black_floor",)
+    floor_names = ("all_black_floor", "mean_map_floor", "previous_target_floor")
+    no_previous_rule = "A Step Pair with no previous Step Pair (absent or dropped) is scored as all black."
     panel_rows = 0
 
     @property
@@ -366,10 +367,21 @@ class MapLatentTarget:
     def floors(self, tier, split, windows, truth=None, enc=None, stats=None) -> dict:
         enc = enc or tokens.load_encoder("dinov3", "cpu")
         (mean, std), _ = self._stats(tier, enc, stats)
-        black_rgb = np.zeros((1, frames.H, frames.W, 3), np.uint8)
-        black_norm = ((tokens.encode_frames(enc, black_rgb)[0].astype(np.float32) - mean) / std).astype(np.float32)
-        arr = np.broadcast_to(black_norm, (len(windows), 1, *black_norm.shape)).copy()
-        return {"all_black_floor": {"latents": arr}}
+        n = len(windows)
+        fm = _two_frame_floor_maps(tier, windows)
+
+        def _enc_norm(maps_hw):
+            raw = tokens.encode_frames(enc, tokens.map_rgb(maps_hw)).astype(np.float32)
+            return ((raw - mean) / std).astype(np.float32)
+
+        black_norm, mean_norm = _enc_norm(np.stack([fm["all_black_floor"], fm["mean_map_floor"]]))
+        prev_lat = np.broadcast_to(black_norm, (n, *black_norm.shape)).copy()
+        non_empty = [i for i, w in enumerate(windows) if w.previous_regions]
+        if non_empty:
+            prev_lat[non_empty] = _enc_norm(fm["previous_target_floor"][non_empty])
+        return {"all_black_floor": {"latents": np.broadcast_to(black_norm, (n, 1, *black_norm.shape)).copy()},
+                "mean_map_floor": {"latents": np.broadcast_to(mean_norm, (n, 1, *mean_norm.shape)).copy()},
+                "previous_target_floor": {"latents": prev_lat[:, None]}}
 
     def score_samples(self, pred, truth, windows, model, batch, device, stats=None) -> dict:
         lat = pred["latents"]

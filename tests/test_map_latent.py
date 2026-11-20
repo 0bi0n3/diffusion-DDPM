@@ -91,7 +91,7 @@ def test_map_latent_train_sample_score_end_to_end_and_not_decoded_report(tftier,
 
     rep = _score(tftier, tmp_path, "map_latent", [samples], out="report")
     assert rep["target"] == "map_latent"
-    assert list(rep["rows"]) == ["frame_caption", "all_black_floor"]
+    assert list(rep["rows"]) == ["frame_caption", "all_black_floor", "mean_map_floor", "previous_target_floor"]
     fc = rep["rows"]["frame_caption"]
     for wid in VAL_IDS:
         assert set(fc["per_window"][wid]) == TOKEN_METRICS
@@ -137,8 +137,8 @@ def test_true_map_latent_scores_perfectly_normalises_with_train_stats_and_reuses
 
     fake_encoder.reset()
     rep = _score(tftier, tmp_path, "map_latent", [arm_dir], out="r_perfect")
-    # Cached train/val latents are reused: only the single all-black floor map is encoded
-    assert fake_encoder.frames_encoded() <= 1
+    # Cached train/val latents are reused: only the floor maps (black + mean + 1 non-empty previous) are encoded
+    assert fake_encoder.frames_encoded() == 3
     pw = rep["rows"]["perfect"]["per_window"]
     for wid in VAL_IDS:
         assert pw[wid]["token_cosine"] == [pytest.approx(1.0, abs=1e-5)]
