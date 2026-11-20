@@ -50,6 +50,10 @@ PIXELS_LPIPS_CAVEAT = ("LPIPS caveat: LPIPS was trained on natural images. On wh
 PIXELS_FRAMES = ("Each row is one Step Pair (Input Frame Ft -> Ft+1). The target is the exact-pixel Change Map at "
                  "224x400 (white Significant Regions on black; all black for No Change Step Pairs). Paired bootstrap "
                  "resamples whole Windows so the Step Pairs of a Window move together.")
+LATENT_FRAMES = ("Each row is one Step Pair (Input Frame Ft -> Ft+1). The target is the Map Latent (frozen encoder "
+                 "tokens of the Change Map, normalised with training Map Latent statistics). Map Latent predictions "
+                 "are not decoded to pixels, so no pixel-space metrics or image panels are reported. Paired bootstrap "
+                 "resamples whole Windows so the Step Pairs of a Window move together.")
 
 
 def _f(v, nd=4):
@@ -59,19 +63,25 @@ def _f(v, nd=4):
 def render(rep: dict) -> str:
     masked = rep["target"] == "masked_frame"
     pixels = rep["target"] == "change_map_pixels"
+    latent = rep["target"] == "map_latent"
+    two_frame = pixels or latent
     names = [m for m in next(iter(rep["rows"].values()))["per_window"][rep["window_ids"][0]]] if rep["rows"] else []
     cols = names + ["psnr"] if "mse" in names else names
     head = [HEADERS.get(m, m) if m != "psnr" else "PSNR (dB)" for m in cols]
     caveat = MASKED_LPIPS_CAVEAT if masked else (PIXELS_LPIPS_CAVEAT if pixels else LPIPS_CAVEAT)
-    frames_note = MASKED_FRAMES if masked else (PIXELS_FRAMES if pixels else FRAMES)
+    frames_note = MASKED_FRAMES if masked else (LATENT_FRAMES if latent else (PIXELS_FRAMES if pixels else FRAMES))
     direction = (("Lower is better for every metric except Token Cosine and Region Token Cosine (higher is better)."
                   if "tokens" in rep else "Lower is better for every metric.")
-                 if (masked or pixels) else "Lower LPIPS and MSE are better.")
-    L = ["# Masked Frame scoring" if masked else ("# Change Map (pixels) scoring" if pixels else "# Change Map scoring"), "",
-         f"Split: {rep['split']}. {'Step Pairs' if pixels else 'Windows'}: {rep['n_windows']} ({rep['n_no_change']} No Change). "
-         f"Samples per {'Step Pair' if pixels else 'Window'}: arms k={rep['k']}, floors 1. "
+                 if (masked or two_frame) else "Lower LPIPS and MSE are better.")
+    title = ("# Masked Frame scoring" if masked else
+             "# Map Latent scoring" if latent else
+             "# Change Map (pixels) scoring" if pixels else "# Change Map scoring")
+    caveat_lines = [f"- {CAPTION_LEAK}"] + ([] if latent else [f"- {caveat}"])
+    L = [title, "",
+         f"Split: {rep['split']}. {'Step Pairs' if two_frame else 'Windows'}: {rep['n_windows']} ({rep['n_no_change']} No Change). "
+         f"Samples per {'Step Pair' if two_frame else 'Window'}: arms k={rep['k']}, floors 1. "
          + direction, "", frames_note, "",
-         "## Caveats", "", f"- {CAPTION_LEAK}", f"- {caveat}", ""]
+         "## Caveats", "", *caveat_lines, ""]
     if masked:
         L += [FLOOR_NOTES, "", HYPOTHESES, ""]
     if "tokens" in rep:

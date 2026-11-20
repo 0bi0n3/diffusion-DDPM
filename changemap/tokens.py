@@ -134,10 +134,57 @@ def true_tokens(tier, split, encoder, ids, true_rgb) -> np.ndarray:
     return np.stack([have[(w, s)] for w, s in zip(ids, shas)])
 
 
+def map_rgb(maps) -> np.ndarray:
+    """(..., H, W) Change Map in [0, 1] -> (..., H, W, 3) uint8 white-on-black RGB."""
+    u = np.rint(np.clip(np.asarray(maps, np.float32), 0, 1) * 255).astype(np.uint8)
+    return np.repeat(u[..., None], 3, axis=-1)
+
+
+def stats_path(tier, encoder) -> Path:
+    tag = re.sub(r"[^A-Za-z0-9._-]+", "-", f"train_stats__{encoder.id}__{encoder.revision}")
+    return Path(tier) / "token_cache" / f"{tag}.npz"
+
+
+def map_latent_stats(tier, encoder, train_ids, train_maps) -> tuple[tuple[np.ndarray, np.ndarray], Path]:
+    """Per-channel (mean (C,), std (C,)) float32 of the training Map Latents, cached with sha256 beside the token cache.
+    Recomputed if the training token cache changes; near-zero std channels are clamped to 1.0."""
+    toks = true_tokens(tier, "train", encoder, train_ids, map_rgb(train_maps))
+    train_sha = _file_sha(cache_path(tier, "train", encoder))
+    path = stats_path(tier, encoder)
+    side = path.with_suffix(".json")
+    if path.exists():
+        meta = json.loads(side.read_text()) if side.exists() else {}
+        if not side.exists() or meta.get("sha256") != _file_sha(path):
+            raise ValueError(f"{path}: Map Latent stats checksum mismatch (delete it to recompute)")
+        if meta.get("train_cache_sha256") == train_sha:
+            z = np.load(path)
+            return (z["mean"].astype(np.float32), z["std"].astype(np.float32)), path
+    x = toks.astype(np.float64)
+    mean = x.mean(axis=(0, 1, 2)).astype(np.float32)
+    std = x.std(axis=(0, 1, 2))
+    std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, mean=mean, std=std)
+    side.write_text(json.dumps({"encoder": encoder.id, "revision": encoder.revision,
+                                "train_cache_sha256": train_sha, "sha256": _file_sha(path)}, indent=1) + "\n")
+    return (mean, std), path
+
+
 def score_samples(encoder, tokens_true, region, rgb, mask, stats=None) -> dict:
     """Token metrics {name: (n, k)} of generated samples rgb (n, k, 224, 400, 3), mask (n, k, 224, 400)."""
     n, k = rgb.shape[:2]
     comp = frames.composite(rgb, mask).reshape(n * k, frames.H, frames.W, 3)
+    return _score_rgb(encoder, tokens_true, region, comp, n, k, stats)
+
+
+def score_maps(encoder, tokens_true, region, maps, stats=None) -> dict:
+    """Token metrics {name: (n, k)} of generated Change Maps (n, k, 224, 400) in [0, 1]."""
+    n, k = maps.shape[:2]
+    comp = map_rgb(maps.reshape(n * k, frames.H, frames.W))
+    return _score_rgb(encoder, tokens_true, region, comp, n, k, stats)
+
+
+def _score_rgb(encoder, tokens_true, region, comp, n: int, k: int, stats=None) -> dict:
     out = {m: np.full((n, k), np.nan) for m in METRICS}
     for s in range(0, n * k, CHUNK):
         toks = encode_frames(encoder, comp[s:s + CHUNK])
