@@ -125,7 +125,8 @@ def test_change_map_pixels_train_sample_score_end_to_end(tftier, tmp_path):
     assert list(rep["rows"]) == ["frame_caption", "all_black_floor"]
     fc = rep["rows"]["frame_caption"]
     assert fc["k"] == 2
-    assert set(fc["per_window"]["t1_10-11"]) == {"lpips", "region_lpips", "mse", "spill"}
+    assert set(fc["per_window"]["t1_10-11"]) == {"lpips", "region_lpips", "mse", "spill",
+                                                 "token_cosine", "region_token_cosine", "token_mse"}
     assert set(fc["summary"]) == {"all", "change", "no_change"}
     assert fc["summary"]["all"]["n"] == 4
     assert fc["summary"]["change"]["n"] == 3

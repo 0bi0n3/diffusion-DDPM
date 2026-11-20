@@ -107,10 +107,11 @@ def _ctx(ctx, idx):
 
 @torch.no_grad()
 def validate(ema_model, val_x, val_ctx, val_ids, val_truth, shift, seed, opts, device, autocast_cfg,
-             target=None) -> dict:
+             target=None, shape=None) -> dict:
     """Flow-matching loss of the EMA on the fixed val subset (fixed noise and times), and the target's full-frame MSE
     (`val_mse`) of a few EMA samples against their truth. No boxes and no IoU."""
     target = target or targets.get(targets.DEFAULT)
+    shape = shape or target.shape
     ema_model.eval()
     g = torch.Generator().manual_seed(seed + 1)
     total = 0.0
@@ -121,7 +122,7 @@ def validate(ema_model, val_x, val_ctx, val_ids, val_truth, shift, seed, opts, d
             pred = ema_model(xt, t, _ctx(val_ctx, slice(i, i + 32)))
         total += float(transport.velocity_loss(pred.float(), ut)) * len(x0)
     n = min(opts.val_samples, len(val_ids))
-    noise = transport.window_noise(val_ids[:n], target.shape, seed).to(device)
+    noise = transport.window_noise(val_ids[:n], shape, seed).to(device)
     x = transport.sample_euler(ema_model, noise, _ctx(val_ctx, slice(0, n)), opts.val_sample_steps, shift)
     mse = target.validation_mse(target.decode(x.cpu().numpy()), {k: v[:n] for k, v in val_truth.items()})
     return {"val_loss": total / len(val_x), "val_mse": mse}
@@ -135,12 +136,17 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     windows = load_windows(tier, "train")
+    train_arr = tg.tensors(tier, "train", windows)
+    channels = int(train_arr.shape[-1])
+    shape = (*GRID, channels)
     config = {"target": tg.name, "arm": arm, "steps": steps, "batch": batch, "lr": lr, "hidden": hidden, "depth": depth, "heads": heads,
-              "seed": seed, "shift": transport.time_shift(tg.shape), "tier": str(tier),
+              "seed": seed, "shift": transport.time_shift(shape), "tier": str(tier),
               "n_train_windows": len(windows), "device": device, "ema_decay": opts.ema_decay, "grad_clip": opts.grad_clip,
               "qk_norm": opts.qk_norm, "warmup": opts.warmup,
               "amp": opts.amp, "val_every": opts.val_every, "val_n": opts.val_n,
               "val_sample_steps": opts.val_sample_steps}
+    if channels != tg.channels:
+        config["channels"] = channels
     shift = config["shift"]
     last = out / "last.pt"
     if last.exists() and opts.resume == "never":
@@ -149,7 +155,7 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
         raise ValueError(f"--resume require, but {last} does not exist")
 
     torch.manual_seed(seed)
-    model = build_model(arm, hidden, depth, heads, tg.channels, qk_norm=opts.qk_norm).to(device)
+    model = build_model(arm, hidden, depth, heads, channels, qk_norm=opts.qk_norm).to(device)
     config["n_params"] = n_params(model)
     ema = EMA(model, opts.ema_decay)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -174,7 +180,7 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
     bf16 = opts.amp == "bf16" or (opts.amp == "auto" and use_cuda and torch.cuda.is_bf16_supported())
     ac = dict(device_type=device.split(":")[0], dtype=torch.bfloat16, enabled=bf16)
 
-    data = torch.from_numpy(tg.tensors(tier, "train", windows)).to(device)
+    data = torch.from_numpy(train_arr).to(device)
     ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "train", [w.id for w in windows])] \
         if uses_context(arm) else None
     val = load_windows(tier, "val")
@@ -233,7 +239,7 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
             if step % opts.log_every == 0 or step == steps:
                 wb.train(step, float(loss), step_lr)
             if (opts.val_every and step % opts.val_every == 0) or step == steps:
-                v = validate(ema.module, val_x, val_ctx, val_ids, val_truth, shift, seed, opts, device, ac, tg)
+                v = validate(ema.module, val_x, val_ctx, val_ids, val_truth, shift, seed, opts, device, ac, tg, shape)
                 log["validation"].append({"step": step, **v})
                 wb.validation(step, v["val_loss"], v["val_mse"])
             if opts.ckpt_every and step % opts.ckpt_every == 0 and step < steps:

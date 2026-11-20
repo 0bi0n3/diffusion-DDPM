@@ -24,7 +24,9 @@ def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: b
     targets.require_same_target(target, cfg.get("target"), f"run {run}")
     tg = targets.get(target)
     windows = load_windows(tier, split, verdict)
-    model = build_model(cfg["arm"], cfg["hidden"], cfg["depth"], cfg["heads"], tg.channels,
+    channels = cfg.get("channels", tg.channels)
+    shape = (*GRID, channels)
+    model = build_model(cfg["arm"], cfg["hidden"], cfg["depth"], cfg["heads"], channels,
                         qk_norm=cfg.get("qk_norm", False))
     model.load_state_dict(torch.load(run / "model.pt", map_location="cpu"))
     model.to(device).eval()
@@ -35,7 +37,7 @@ def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: b
     out_arrays = None
     for j in range(k):
         for i in range(0, len(ids), batch):
-            noise = transport.window_noise(ids[i:i + batch], tg.shape, seed + j).to(device)
+            noise = transport.window_noise(ids[i:i + batch], shape, seed + j).to(device)
             x = transport.sample_euler(model, noise, (ctx[0][i:i + batch].to(device), ctx[1][i:i + batch].to(device)) if ctx else None, steps, cfg["shift"])
             y = tg.decode(x.cpu().numpy())
             if "mask" in y:

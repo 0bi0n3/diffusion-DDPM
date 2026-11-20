@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import frames, metrics
+from . import frames, metrics, tokens
 from .data import GRID, from_model_range, load_index, load_windows, mean_grid_map, to_model_range
 
 DEFAULT = "masked_frame"
@@ -229,12 +229,6 @@ class MaskedFrameTarget:
         return f"sample {j + 1}\nRegion LPIPS {rl}\nMask MSE {pw['mask_mse'][i, j]:.4f}"
 
 
-def _map_rgb(m: np.ndarray) -> np.ndarray:
-    """(..., H, W) float in [0, 1] -> (..., H, W, 3) uint8 grayscale for LPIPS."""
-    u = np.rint(np.clip(np.asarray(m, np.float32), 0, 1) * 255).astype(np.uint8)
-    return np.repeat(u[..., None], 3, axis=-1)
-
-
 class ChangeMapPixelsTarget:
     """Change Map (pixels) at 224x400, 1 channel drawn from the verified Change Map image index and folded 8x8 into
     (28, 50, 64). Scored with full-frame LPIPS at 224x400, Region LPIPS on the padded crop, MSE and Spill."""
@@ -273,17 +267,17 @@ class ChangeMapPixelsTarget:
     def score_samples(self, pred, truth, windows, model, batch, device) -> dict:
         maps = pred["maps"]
         n, k = maps.shape[:2]
-        flat_p = _map_rgb(maps.reshape(n * k, frames.H, frames.W))
-        flat_t = _map_rgb(np.repeat(truth["maps"], k, axis=0))
+        flat_p = tokens.map_rgb(maps.reshape(n * k, frames.H, frames.W))
+        flat_t = tokens.map_rgb(np.repeat(truth["maps"], k, axis=0))
         out = {m: np.full((n, k), np.nan) for m in self.metrics}
         out["lpips"] = metrics.lpips_images(model, flat_p, flat_t, batch, device).reshape(n, k)
         for i in range(n):
             y0, x0, y1, x1 = truth["crop"][i]
-            t_rgb = _map_rgb(truth["maps"][i])
+            t_rgb = tokens.map_rgb(truth["maps"][i])
             for j in range(k):
                 out["mse"][i, j], out["spill"][i, j] = metrics.mask_metrics(maps[i, j], truth["maps"][i])
                 if windows[i].regions:
-                    p_rgb = _map_rgb(maps[i, j])
+                    p_rgb = tokens.map_rgb(maps[i, j])
                     out["region_lpips"][i, j] = metrics.lpips_images(
                         model, p_rgb[None, y0:y1, x0:x1], t_rgb[None, y0:y1, x0:x1], 1, device)[0]
         return out
@@ -306,7 +300,75 @@ class ChangeMapPixelsTarget:
         return f"sample {j + 1}\nLPIPS {pw['lpips'][i, j]:.3f}\nRegion {rl}"
 
 
-TARGETS = {t.name: t for t in (GridMapTarget(), MaskedFrameTarget(), ChangeMapPixelsTarget())}
+class MapLatentTarget:
+    """Frozen DINOv3 Map Latents (28x50xC) of each Step Pair's Change Map, normalised per channel with the training
+    Map Latents' mean and std. Scored in latent space only (not decoded to pixels)."""
+    name = "map_latent"
+    channels = 768
+    upscale = 0
+    sample_keys = ("latents",)
+    metrics = ("token_cosine", "region_token_cosine", "token_mse")
+    compare_metrics = ("region_token_cosine", "token_mse")
+    higher_better = frozenset({"token_cosine", "region_token_cosine"})
+    floor_names = ("all_black_floor",)
+    panel_rows = 0
+
+    @property
+    def shape(self) -> tuple:
+        return (*GRID, self.channels)
+
+    def _stats(self, tier, enc, stats=None):
+        if stats is not None:
+            return stats, None
+        return tokens.train_map_latent_stats(tier, enc)
+
+    def _encode_split(self, tier, split, windows, verdict=False, enc=None, stats=None):
+        enc = enc or tokens.load_encoder("dinov3", "cpu")
+        regs = load_index(tier, split, windows, verdict)
+        maps = np.stack([frames.change_mask(r) for r in regs])
+        st, _ = self._stats(tier, enc, stats)
+        raw = tokens.true_tokens(tier, split, enc, [w.id for w in windows], tokens.map_rgb(maps)).astype(np.float32)
+        norm = ((raw - st[0]) / st[1]).astype(np.float32)
+        return raw, norm, maps
+
+    def tensors(self, tier, split, windows) -> np.ndarray:
+        """(n, 28, 50, C) float32 normalised with the training Map Latent mean and std."""
+        _, norm, _ = self._encode_split(tier, split, windows)
+        return norm
+
+    def truths(self, tier, split, windows, verdict: bool = False, enc=None, stats=None) -> dict:
+        raw, norm, maps = self._encode_split(tier, split, windows, verdict, enc, stats)
+        region = np.stack([metrics.pool_mask(m) > 0 for m in maps])
+        return {"latents": norm, "raw_latents": raw, "region": region}
+
+    def decode(self, x) -> dict:
+        return {"latents": np.asarray(x, np.float32)}
+
+    def floors(self, tier, split, windows, truth=None, enc=None, stats=None) -> dict:
+        enc = enc or tokens.load_encoder("dinov3", "cpu")
+        (mean, std), _ = self._stats(tier, enc, stats)
+        black_rgb = np.zeros((1, frames.H, frames.W, 3), np.uint8)
+        black_norm = ((tokens.encode_frames(enc, black_rgb)[0].astype(np.float32) - mean) / std).astype(np.float32)
+        arr = np.broadcast_to(black_norm, (len(windows), 1, *black_norm.shape)).copy()
+        return {"all_black_floor": {"latents": arr}}
+
+    def score_samples(self, pred, truth, windows, model, batch, device, stats=None) -> dict:
+        lat = pred["latents"]
+        n, k = lat.shape[:2]
+        mean, std = stats
+        out = {m: np.full((n, k), np.nan) for m in self.metrics}
+        for i in range(n):
+            for j in range(k):
+                pred_raw = lat[i, j].astype(np.float32) * std + mean
+                for m, v in tokens.token_scores(pred_raw, truth["raw_latents"][i], truth["region"][i], stats).items():
+                    out[m][i, j] = v
+        return out
+
+    def validation_mse(self, decoded, truth) -> float:
+        return float(np.mean((decoded["latents"] - truth["latents"]) ** 2))
+
+
+TARGETS = {t.name: t for t in (GridMapTarget(), MaskedFrameTarget(), ChangeMapPixelsTarget(), MapLatentTarget())}
 
 
 def get(name: str):
