@@ -98,21 +98,13 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
     return out
 
 
-def _index_path(tier, split: str) -> Path:
-    p = Path(tier) / f"{split}_index.jsonl"
-    if p.exists():
-        return p
-    alt = Path(tier) / split / "index.jsonl"
-    return alt if alt.exists() else p
-
-
 def load_index(tier, split: str, windows: list[Window], verdict: bool = False) -> list[tuple]:
-    """Join `windows` to `<tier>/<split>_index.jsonl` (or `<tier>/<split>/index.jsonl`) by Step Pair id and source
-    Window (`<id>@<source_window_id>`). Refuses missing files, missing rows, or regions that differ from the tier row's
-    Significant Regions. Returns one tuple of 1920x1080 boxes per Window."""
+    """Join `windows` to `<tier>/<split>_index.jsonl` by Step Pair id and source Window (`<id>@<source_window_id>`).
+    Refuses missing files, missing rows, or regions that differ from the tier row's Significant Regions. Returns one
+    tuple of Significant Regions per Window."""
     if split == TEST and not verdict:
         raise PermissionError("the test split is read only for a verdict: pass --verdict")
-    path = _index_path(tier, split)
+    path = Path(tier) / f"{split}_index.jsonl"
     if not path.exists():
         raise ValueError(f"{path} not found: change_map_pixels needs the Change Map image index")
     by_win = {}

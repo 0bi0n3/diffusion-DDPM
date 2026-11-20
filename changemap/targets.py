@@ -33,6 +33,16 @@ from .data import GRID, from_model_range, load_index, load_windows, mean_grid_ma
 DEFAULT = "masked_frame"
 
 
+def _read_previous_frame(window):
+    frame = window.previous_frame
+    if frame:
+        from pathlib import Path
+        if Path(frame).is_file():
+            import matplotlib.pyplot as plt
+            return plt.imread(frame)
+    return None
+
+
 class GridMapTarget:
     name = "grid_map"
     channels = 1
@@ -85,13 +95,7 @@ class GridMapTarget:
 
     # panels: images in [0, 1], one list entry per panel row
     def panel_previous(self, truth, i, window):
-        frame = window.previous_frame
-        if frame:
-            from pathlib import Path
-            if Path(frame).is_file():
-                import matplotlib.pyplot as plt
-                return plt.imread(frame)
-        return None
+        return _read_previous_frame(window)
 
     def panel_truth(self, truth, i) -> list:
         return [truth["maps"][i]]
@@ -288,13 +292,7 @@ class ChangeMapPixelsTarget:
         return float(np.mean((decoded["maps"] - truth["maps"]) ** 2))
 
     def panel_previous(self, truth, i, window):
-        frame = window.previous_frame
-        if frame:
-            from pathlib import Path
-            if Path(frame).is_file():
-                import matplotlib.pyplot as plt
-                return plt.imread(frame)
-        return None
+        return _read_previous_frame(window)
 
     def panel_truth(self, truth, i) -> list:
         return [truth["maps"][i]]

@@ -136,6 +136,8 @@ def test_change_map_pixels_train_sample_score_end_to_end(tftier, tmp_path):
     assert ab_nc["mse"] == [0.0] and ab_nc["lpips"] == [0.0]
     assert ab_nc["region_lpips"] == [None] and ab_nc["spill"] == [None]
     assert (report_dir / "report.md").exists() and list((report_dir / "panels").glob("*.png"))
+    md = (report_dir / "report.md").read_text()
+    assert "# Change Map (pixels) scoring" in md and "Step Pairs:" in md and "Last Step" not in md
 
 
 def _write_arm(tmp_path, name, ids, maps):
@@ -192,7 +194,7 @@ def test_true_map_scores_zero_and_matches_fixture_png_downscaled_nearest(tftier,
 def test_mismatched_or_missing_index_row_exits_nonzero(tftier, tmp_path):
     idx_path = tftier / "val_index.jsonl"
     rows = [json.loads(line) for line in idx_path.read_text().splitlines() if line.strip()]
-    # Corrupt the regions of the first val row
+    # Corrupt the regions of the first val row (refused on score) and first train row (refused on train)
     bad = [dict(r) for r in rows]
     bad[0]["regions_px_1920x1080"] = [[0.0, 0.0, 100.0, 100.0]]
     idx_path.write_text("\n".join(json.dumps(r) for r in bad) + "\n")
@@ -203,6 +205,14 @@ def test_mismatched_or_missing_index_row_exits_nonzero(tftier, tmp_path):
     idx_path.write_text("\n".join(json.dumps(r) for r in rows[1:]) + "\n")
     exits_nonzero(["score", "--tier", str(tftier), "--split", "val", "--target", "change_map_pixels",
                    "--lpips-dir", str(tmp_path), "--out", str(tmp_path / "r_missing")])
+
+    # Corrupt train index row -> train refuses
+    train_idx = tftier / "train_index.jsonl"
+    trows = [json.loads(line) for line in train_idx.read_text().splitlines() if line.strip()]
+    trows[0]["regions_px_1920x1080"] = [[0.0, 0.0, 100.0, 100.0]]
+    train_idx.write_text("\n".join(json.dumps(r) for r in trows) + "\n")
+    exits_nonzero(["train", "--tier", str(tftier), "--target", "change_map_pixels", "--arm", "frame_caption",
+                   "--steps", "1", "--batch", "2", *SMALL, "--out", str(tmp_path / "r_train_bad")])
 
 
 def test_bootstrap_resamples_whole_windows_so_step_pairs_move_together(tmp_path):

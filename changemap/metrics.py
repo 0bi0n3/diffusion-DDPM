@@ -117,28 +117,23 @@ def paired_bootstrap(diffs, resamples: int = RESAMPLES, seed: int = BOOTSTRAP_SE
     d = d[keep]
     if not len(d):
         return None
-    if groups is None:
+    g_keep = [g for g, ok in zip(groups, keep) if ok] if groups is not None else None
+    uniq = list(dict.fromkeys(g_keep)) if g_keep is not None else None
+    if uniq is None or len(uniq) == len(d):
         idx = np.random.default_rng(seed).integers(0, len(d), (resamples, len(d)))
         means = d[idx].mean(axis=1)
         extra = {}
     else:
-        g_keep = [g for g, ok in zip(groups, keep) if ok]
-        uniq = list(dict.fromkeys(g_keep))
-        if len(uniq) == len(d):
-            idx = np.random.default_rng(seed).integers(0, len(d), (resamples, len(d)))
-            means = d[idx].mean(axis=1)
-            extra = {}
-        else:
-            pos = {u: i for i, u in enumerate(uniq)}
-            sums = np.zeros(len(uniq), np.float64)
-            counts = np.zeros(len(uniq), np.float64)
-            for v, g in zip(d, g_keep):
-                i = pos[g]
-                sums[i] += v
-                counts[i] += 1.0
-            idx = np.random.default_rng(seed).integers(0, len(uniq), (resamples, len(uniq)))
-            means = sums[idx].sum(axis=1) / counts[idx].sum(axis=1)
-            extra = {"n_windows": len(uniq)}
+        pos = {u: i for i, u in enumerate(uniq)}
+        sums = np.zeros(len(uniq), np.float64)
+        counts = np.zeros(len(uniq), np.float64)
+        for v, g in zip(d, g_keep):
+            i = pos[g]
+            sums[i] += v
+            counts[i] += 1.0
+        idx = np.random.default_rng(seed).integers(0, len(uniq), (resamples, len(uniq)))
+        means = sums[idx].sum(axis=1) / counts[idx].sum(axis=1)
+        extra = {"n_source_windows": len(uniq)}
     lo, hi = np.percentile(means, [2.5, 97.5])
     return {"mean_diff": float(d.mean()), "ci_lo": float(lo), "ci_hi": float(hi), "n": int(len(d)),
             **extra, "resamples": resamples, "seed": seed}
