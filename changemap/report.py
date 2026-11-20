@@ -101,7 +101,7 @@ def render(rep: dict) -> str:
             mse = (TOKEN_MSE_NORMALISED.format(stats=t["latent_stats"]) if t["normalised"] else TOKEN_MSE_RAW)
             L += [TOKEN_METHOD.format(enc=enc, mse=mse, cache=t["cache"]), "", TOKEN_HYPOTHESES, ""]
     if "previous_target_floor" in rep["rows"]:
-        L += [f"Previous-Target Floor: {rep['no_previous_rule']} Windows without a usable previous pair: "
+        L += [f"Previous-Target Floor: {rep['no_previous_rule']} {'Step Pairs' if two_frame else 'Windows'} without a usable previous pair: "
               f"{rep['n_no_previous']} of {rep['n_windows']}.", ""]
     for variant, title in (("single", "Single sample (mean over the k samples)"),
                            ("best_of_k", "Best of k (oracle selection: picks the sample closest to the target)")):

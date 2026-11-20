@@ -229,6 +229,20 @@ class MaskedFrameTarget:
         return f"sample {j + 1}\nRegion LPIPS {rl}\nMask MSE {pw['mask_mse'][i, j]:.4f}"
 
 
+def _two_frame_floor_maps(tier, windows) -> dict[str, np.ndarray]:
+    """Pixel-space (224, 400) float32 floor maps for two-frame targets:
+      all_black_floor        (224, 400) zeros
+      mean_map_floor         (224, 400) mean of verified training Change Maps
+      previous_target_floor  (n, 224, 400) each Step Pair's previous-pair Change Map (zeros when absent/dropped)
+    """
+    train_w = load_windows(tier, "train")
+    mean_map = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)]).mean(0).astype(np.float32)
+    prev_maps = np.stack([frames.change_mask(w.previous_regions or ()) for w in windows])
+    return {"all_black_floor": np.zeros((frames.H, frames.W), np.float32),
+            "mean_map_floor": mean_map,
+            "previous_target_floor": prev_maps}
+
+
 class ChangeMapPixelsTarget:
     """Change Map (pixels) at 224x400, 1 channel drawn from the verified Change Map image index and folded 8x8 into
     (28, 50, 64). Scored with full-frame LPIPS at 224x400, Region LPIPS on the padded crop, MSE and Spill."""
@@ -239,7 +253,8 @@ class ChangeMapPixelsTarget:
     metrics = ("lpips", "region_lpips", "mse", "spill")
     compare_metrics = ("lpips", "region_lpips", "mse")
     higher_better = frozenset()
-    floor_names = ("all_black_floor", "mean_map_floor")
+    floor_names = ("all_black_floor", "mean_map_floor", "previous_target_floor")
+    no_previous_rule = "A Step Pair with no previous Step Pair (absent or dropped) is scored as all black."
     panel_rows = 1
 
     @property
@@ -263,10 +278,10 @@ class ChangeMapPixelsTarget:
 
     def floors(self, tier, split, windows, truth=None) -> dict:
         n = len(windows)
-        train_w = load_windows(tier, "train")
-        mean_map = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)]).mean(0).astype(np.float32)
-        return {"all_black_floor": {"maps": np.zeros((n, 1, frames.H, frames.W), np.float32)},
-                "mean_map_floor": {"maps": np.broadcast_to(mean_map, (n, 1, frames.H, frames.W)).copy()}}
+        fm = _two_frame_floor_maps(tier, windows)
+        return {"all_black_floor": {"maps": np.broadcast_to(fm["all_black_floor"], (n, 1, frames.H, frames.W)).copy()},
+                "mean_map_floor": {"maps": np.broadcast_to(fm["mean_map_floor"], (n, 1, frames.H, frames.W)).copy()},
+                "previous_target_floor": {"maps": fm["previous_target_floor"][:, None]}}
 
     def score_samples(self, pred, truth, windows, model, batch, device) -> dict:
         maps = pred["maps"]

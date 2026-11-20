@@ -122,7 +122,7 @@ def test_change_map_pixels_train_sample_score_end_to_end(tftier, tmp_path):
     rep = json.loads((report_dir / "report.json").read_text())
     assert rep["target"] == "change_map_pixels"
     assert rep["window_ids"] == VAL_IDS
-    assert list(rep["rows"]) == ["frame_caption", "all_black_floor", "mean_map_floor"]
+    assert list(rep["rows"]) == ["frame_caption", "all_black_floor", "mean_map_floor", "previous_target_floor"]
     fc = rep["rows"]["frame_caption"]
     assert fc["k"] == 2
     assert set(fc["per_window"]["t1_10-11"]) == {"lpips", "region_lpips", "mse", "spill",
