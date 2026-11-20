@@ -163,9 +163,19 @@ def map_latent_stats(tier, encoder, train_ids, train_maps) -> tuple[tuple[np.nda
         if meta.get("train_cache_sha256") == train_sha:
             z = np.load(path)
             return (z["mean"].astype(np.float32), z["std"].astype(np.float32)), path
-    x = toks.astype(np.float64)
-    mean = x.mean(axis=(0, 1, 2)).astype(np.float32)
-    std = x.std(axis=(0, 1, 2))
+    c = toks.shape[-1]
+    n_el = 0
+    s1 = np.zeros(c, np.float64)
+    s2 = np.zeros(c, np.float64)
+    for i in range(0, len(toks), 256):
+        blk = toks[i:i + 256].astype(np.float64)
+        n_el += blk.shape[0] * blk.shape[1] * blk.shape[2]
+        s1 += blk.sum(axis=(0, 1, 2))
+        s2 += (blk * blk).sum(axis=(0, 1, 2))
+    mean64 = s1 / max(n_el, 1)
+    var64 = np.maximum(s2 / max(n_el, 1) - mean64 * mean64, 0.0)
+    mean = mean64.astype(np.float32)
+    std = np.sqrt(var64)
     std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, mean=mean, std=std)

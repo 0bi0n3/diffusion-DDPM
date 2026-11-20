@@ -184,7 +184,7 @@ exit $RC
 """
 
 
-def render_map_latents_sbatch(sha: str, tier: str, splits=("train", "val"), time: str = "02:00:00", mem: str = "32G",
+def render_map_latents_sbatch(sha: str, tier: str, splits=("train", "val"), time: str = "02:00:00", mem: str = "64G",
                               cpus: int = 4, home: str = HOME, encoder: str = "dinov3") -> str:
     """One GPU job: pre-build per-split Map Latent caches and training stats under `<tier>/token_cache/`."""
     lc.submit_command("train", sha, {}, time)
@@ -245,7 +245,7 @@ def _add_map_latents_args(s) -> None:
     s.add_argument("--splits", nargs="+", choices=("train", "val"), default=["train", "val"])
     s.add_argument("--encoder", default="dinov3")
     s.add_argument("--time", default="02:00:00")
-    s.add_argument("--mem", default="32G")
+    s.add_argument("--mem", default="64G")
     s.add_argument("--cpus", type=int, default=4)
 
 
