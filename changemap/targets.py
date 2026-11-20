@@ -28,9 +28,19 @@ from __future__ import annotations
 import numpy as np
 
 from . import frames, metrics
-from .data import GRID, from_model_range, load_windows, mean_grid_map, to_model_range
+from .data import GRID, from_model_range, load_index, load_windows, mean_grid_map, to_model_range
 
 DEFAULT = "masked_frame"
+
+
+def _read_previous_frame(window):
+    frame = window.previous_frame
+    if frame:
+        from pathlib import Path
+        if Path(frame).is_file():
+            import matplotlib.pyplot as plt
+            return plt.imread(frame)
+    return None
 
 
 class GridMapTarget:
@@ -85,13 +95,7 @@ class GridMapTarget:
 
     # panels: images in [0, 1], one list entry per panel row
     def panel_previous(self, truth, i, window):
-        frame = window.previous_frame
-        if frame:
-            from pathlib import Path
-            if Path(frame).is_file():
-                import matplotlib.pyplot as plt
-                return plt.imread(frame)
-        return None
+        return _read_previous_frame(window)
 
     def panel_truth(self, truth, i) -> list:
         return [truth["maps"][i]]
@@ -225,7 +229,84 @@ class MaskedFrameTarget:
         return f"sample {j + 1}\nRegion LPIPS {rl}\nMask MSE {pw['mask_mse'][i, j]:.4f}"
 
 
-TARGETS = {t.name: t for t in (GridMapTarget(), MaskedFrameTarget())}
+def _map_rgb(m: np.ndarray) -> np.ndarray:
+    """(..., H, W) float in [0, 1] -> (..., H, W, 3) uint8 grayscale for LPIPS."""
+    u = np.rint(np.clip(np.asarray(m, np.float32), 0, 1) * 255).astype(np.uint8)
+    return np.repeat(u[..., None], 3, axis=-1)
+
+
+class ChangeMapPixelsTarget:
+    """Change Map (pixels) at 224x400, 1 channel drawn from the verified Change Map image index and folded 8x8 into
+    (28, 50, 64). Scored with full-frame LPIPS at 224x400, Region LPIPS on the padded crop, MSE and Spill."""
+    name = "change_map_pixels"
+    channels = frames.BLOCK * frames.BLOCK
+    upscale = 1
+    sample_keys = ("maps",)
+    metrics = ("lpips", "region_lpips", "mse", "spill")
+    compare_metrics = ("lpips", "region_lpips", "mse")
+    higher_better = frozenset()
+    floor_names = ("all_black_floor",)
+    panel_rows = 1
+
+    @property
+    def shape(self) -> tuple:
+        return (*GRID, self.channels)
+
+    def tensors(self, tier, split, windows) -> np.ndarray:
+        """(n, 28, 50, 64) float32 in [-1, 1]."""
+        regs = load_index(tier, split, windows)
+        return np.stack([frames.map_to_model_range(frames.change_mask(r)) for r in regs])
+
+    def truths(self, tier, split, windows, verdict: bool = False) -> dict:
+        """maps (n, 224, 400) float32 in {0, 1}, crop (n, 4) int64 Region LPIPS box (zeros for No Change)."""
+        regs = load_index(tier, split, windows, verdict)
+        maps = np.stack([frames.change_mask(r) for r in regs])
+        crop = np.array([frames.crop_box(r) if r else (0, 0, 0, 0) for r in regs], np.int64)
+        return {"maps": maps, "crop": crop}
+
+    def decode(self, x) -> dict:
+        return {"maps": frames.map_from_model_range(x)}
+
+    def floors(self, tier, split, windows, truth=None) -> dict:
+        return {"all_black_floor": {"maps": np.zeros((len(windows), 1, frames.H, frames.W), np.float32)}}
+
+    def score_samples(self, pred, truth, windows, model, batch, device) -> dict:
+        maps = pred["maps"]
+        n, k = maps.shape[:2]
+        flat_p = _map_rgb(maps.reshape(n * k, frames.H, frames.W))
+        flat_t = _map_rgb(np.repeat(truth["maps"], k, axis=0))
+        out = {m: np.full((n, k), np.nan) for m in self.metrics}
+        out["lpips"] = metrics.lpips_images(model, flat_p, flat_t, batch, device).reshape(n, k)
+        for i in range(n):
+            y0, x0, y1, x1 = truth["crop"][i]
+            t_rgb = _map_rgb(truth["maps"][i])
+            for j in range(k):
+                out["mse"][i, j], out["spill"][i, j] = metrics.mask_metrics(maps[i, j], truth["maps"][i])
+                if windows[i].regions:
+                    p_rgb = _map_rgb(maps[i, j])
+                    out["region_lpips"][i, j] = metrics.lpips_images(
+                        model, p_rgb[None, y0:y1, x0:x1], t_rgb[None, y0:y1, x0:x1], 1, device)[0]
+        return out
+
+    def validation_mse(self, decoded, truth) -> float:
+        return float(np.mean((decoded["maps"] - truth["maps"]) ** 2))
+
+    def panel_previous(self, truth, i, window):
+        return _read_previous_frame(window)
+
+    def panel_truth(self, truth, i) -> list:
+        return [truth["maps"][i]]
+
+    def panel_sample(self, samples, i, j) -> list:
+        return [samples["maps"][i, j]]
+
+    def panel_title(self, pw, i, j) -> str:
+        rl = pw["region_lpips"][i, j]
+        rl = "n/a" if np.isnan(rl) else f"{rl:.3f}"
+        return f"sample {j + 1}\nLPIPS {pw['lpips'][i, j]:.3f}\nRegion {rl}"
+
+
+TARGETS = {t.name: t for t in (GridMapTarget(), MaskedFrameTarget(), ChangeMapPixelsTarget())}
 
 
 def get(name: str):

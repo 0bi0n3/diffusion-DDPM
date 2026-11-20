@@ -75,22 +75,30 @@ def composite(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return np.where(np.asarray(mask)[..., None] > ON, rgb, np.uint8(FILL)).astype(np.uint8)
 
 
-def fold(img: np.ndarray) -> np.ndarray:
-    """(..., 224, 400, 4) -> (..., 28, 50, 256), exactly invertible by `unfold`."""
+def _fold_ch(img: np.ndarray, ch: int) -> np.ndarray:
     img = np.asarray(img)
     lead = img.shape[:-3]
-    x = img.reshape(*lead, GRID[0], BLOCK, GRID[1], BLOCK, 4)
+    x = img.reshape(*lead, GRID[0], BLOCK, GRID[1], BLOCK, ch)
     x = np.moveaxis(x, -4, -3)                         # (..., r, c, dy, dx, ch)
-    return x.reshape(*lead, *GRID, CHANNELS)
+    return x.reshape(*lead, *GRID, ch * BLOCK * BLOCK)
+
+
+def _unfold_ch(sq: np.ndarray, ch: int) -> np.ndarray:
+    sq = np.asarray(sq)
+    lead = sq.shape[:-3]
+    x = sq.reshape(*lead, *GRID, BLOCK, BLOCK, ch)
+    x = np.moveaxis(x, -3, -4)                         # (..., r, dy, c, dx, ch)
+    return x.reshape(*lead, H, W, ch)
+
+
+def fold(img: np.ndarray) -> np.ndarray:
+    """(..., 224, 400, 4) -> (..., 28, 50, 256), exactly invertible by `unfold`."""
+    return _fold_ch(img, 4)
 
 
 def unfold(sq: np.ndarray) -> np.ndarray:
     """(..., 28, 50, 256) -> (..., 224, 400, 4)."""
-    sq = np.asarray(sq)
-    lead = sq.shape[:-3]
-    x = sq.reshape(*lead, *GRID, BLOCK, BLOCK, 4)
-    x = np.moveaxis(x, -3, -4)                         # (..., r, dy, c, dx, ch)
-    return x.reshape(*lead, H, W, 4)
+    return _unfold_ch(sq, 4)
 
 
 def to_model_range(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -103,6 +111,26 @@ def from_model_range(x) -> tuple:
     """Model output (..., 28, 50, 256) -> (uint8 RGB (..., 224, 400, 3), mask (..., 224, 400) float32 in [0, 1])."""
     img = np.clip((unfold(np.asarray(x, np.float32)) + 1) / 2, 0, 1)
     return np.rint(img[..., :3] * 255).astype(np.uint8), img[..., 3].astype(np.float32)
+
+
+def fold_map(m: np.ndarray) -> np.ndarray:
+    """(..., 224, 400) -> (..., 28, 50, 64), 8x8 space-to-depth for a 1-channel Change Map."""
+    return _fold_ch(np.asarray(m)[..., None], 1)
+
+
+def unfold_map(sq: np.ndarray) -> np.ndarray:
+    """(..., 28, 50, 64) -> (..., 224, 400)."""
+    return _unfold_ch(sq, 1)[..., 0]
+
+
+def map_to_model_range(m: np.ndarray) -> np.ndarray:
+    """(224, 400) Change Map in [0, 1] -> folded (28, 50, 64) float32 in [-1, 1]."""
+    return fold_map(np.asarray(m, np.float32) * 2 - 1).astype(np.float32)
+
+
+def map_from_model_range(x) -> np.ndarray:
+    """Model output (..., 28, 50, 64) -> (..., 224, 400) float32 clipped to [0, 1]."""
+    return np.clip((unfold_map(np.asarray(x, np.float32)) + 1) / 2, 0, 1).astype(np.float32)
 
 
 def frames_path(tier, split: str) -> Path:

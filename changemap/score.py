@@ -34,7 +34,7 @@ def _row(kind, pw, windows, higher_better) -> dict:
                            for i, w in enumerate(windows)}}
 
 
-def _comparisons(values: dict, arms: list, tg, compare_metrics=None) -> list:
+def _comparisons(values: dict, arms: list, tg, compare_metrics=None, groups=None) -> list:
     """values[name] = {"single": {metric: (n,)}, "best_of_k": {...}}."""
     pairs = []
     for a in arms:
@@ -47,7 +47,7 @@ def _comparisons(values: dict, arms: list, tg, compare_metrics=None) -> list:
     for a, b in pairs:
         for metric in compare_metrics or tg.compare_metrics:
             va, vb = (values[x.split(":")[0]][x.split(":")[1]][metric] for x in (a, b))
-            boot = metrics.paired_bootstrap(va - vb)
+            boot = metrics.paired_bootstrap(va - vb, groups=groups)
             if boot is not None:
                 h = getattr(tg, "hypotheses", {}).get((a, b))
                 out.append({"a": a, "b": b, "metric": metric, **({"hypothesis": h} if h else {}), **boot})
@@ -134,7 +134,8 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
            "lpips": {"module": getattr(model, "__module__", type(model).__module__), "upscale": tg.upscale,
                      "weights_dir": str(lpips_dir) if lpips_dir else None},
            "caveats": [report.CAPTION_LEAK, report.LPIPS_CAVEAT], "panel_windows": panel_ids,
-           "rows": rows, "comparisons": _comparisons(values, list(arm_maps), tg, compare_metrics)}
+           "rows": rows, "comparisons": _comparisons(values, list(arm_maps), tg, compare_metrics,
+                                                     groups=[w.source_window_id or w.id for w in windows])}
     if token_metrics:
         rep["hypothesis_readings"] = hypothesis_readings(rep["comparisons"])
     out.mkdir(parents=True, exist_ok=True)

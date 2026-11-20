@@ -12,8 +12,12 @@ _Avoid_: clip, sample, segment
 Two consecutive frames of a Window (Ft → Ft+1). The Last Step is F8 → F9.
 _Avoid_: frame pair, transition
 
+**Input Frame**:
+Ft, the first frame of a Step Pair (the screen just before the change). The Previous Frame (F8) is the Input Frame of the Last Step.
+_Avoid_: source frame, input image
+
 **Previous Frame**:
-F8, the screen just before the Last Step. The model's image context.
+F8, the screen just before the Last Step. The model's image context on Last-Step tiers.
 _Avoid_: previous image, source frame, input image
 
 **Significant Region**:
@@ -42,8 +46,12 @@ One of four models trained alike that differ only in context: Unconditional, Cap
 _Avoid_: ablation, variant
 
 **Target**:
-What the model generates for a Window, chosen by name (`masked_frame`, the default, or `grid_map`) and recorded with every run, samples file and report, so a run is never scored as another target.
+What the model generates for a Window or Step Pair, chosen by name (`masked_frame`, the default, `grid_map`, or `change_map_pixels`) and recorded with every run, samples file and report, so a run is never scored as another target.
 _Avoid_: output type, mode
+
+**Change Map (pixels)**:
+The `change_map_pixels` target: a Step Pair's Change Map drawn from its verified index regions at exact pixels at 224×400 (1 channel, x·400/1920, y·224/1080, nearest-pixel edges, at least 1 px) and folded 8×8 into (28, 50, 64) in [−1, 1]; decoded to (224, 400) in [0, 1], on where > 0.5.
+_Avoid_: pixel mask, binary image
 
 **Masked Frame**:
 F9 at 224×400 as RGB plus a Change Mask, with RGB held at the fill value (black, 0) outside the mask. Folded 8×8 into one 256-channel Token Grid square per block (28×50×256; channel order per square: pixel row-major, then R, G, B, mask). The default target.

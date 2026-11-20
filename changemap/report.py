@@ -44,6 +44,12 @@ HEADERS = {"token_cosine": "Token Cosine", "region_token_cosine": "Region Token 
 FRAMES = ("Frames are numbered 1 to 10: a Window spans frame 1 to frame 10, the Previous Frame is frame 9, and the "
           "Last Step goes from frame 9 to frame 10. The Previous-Target Floor repeats the Grid Map of the step before "
           "it (frame 8 to frame 9).")
+PIXELS_LPIPS_CAVEAT = ("LPIPS caveat: LPIPS was trained on natural images. On white-on-black Change Maps at 224x400 it "
+                       "mostly measures where edges and blobs are. Region LPIPS compares the padded crop around the "
+                       "true Significant Regions (at least 32x32 pixels) on Step Pairs with a change.")
+PIXELS_FRAMES = ("Each row is one Step Pair (Input Frame Ft -> Ft+1). The target is the exact-pixel Change Map at "
+                 "224x400 (white Significant Regions on black; all black for No Change Step Pairs). Paired bootstrap "
+                 "resamples whole Windows so the Step Pairs of a Window move together.")
 
 
 def _f(v, nd=4):
@@ -52,15 +58,19 @@ def _f(v, nd=4):
 
 def render(rep: dict) -> str:
     masked = rep["target"] == "masked_frame"
+    pixels = rep["target"] == "change_map_pixels"
     names = [m for m in next(iter(rep["rows"].values()))["per_window"][rep["window_ids"][0]]] if rep["rows"] else []
     cols = names + ["psnr"] if "mse" in names else names
     head = [HEADERS.get(m, m) if m != "psnr" else "PSNR (dB)" for m in cols]
-    caveat = MASKED_LPIPS_CAVEAT if masked else LPIPS_CAVEAT
-    L = ["# Masked Frame scoring" if masked else "# Change Map scoring", "",
-         f"Split: {rep['split']}. Windows: {rep['n_windows']} ({rep['n_no_change']} No Change). "
-         f"Samples per Window: arms k={rep['k']}, floors 1. "
-         + (("Lower is better for every metric except Token Cosine and Region Token Cosine (higher is better)."
-             if "tokens" in rep else "Lower is better for every metric.") if masked else "Lower LPIPS and MSE are better."), "", MASKED_FRAMES if masked else FRAMES, "",
+    caveat = MASKED_LPIPS_CAVEAT if masked else (PIXELS_LPIPS_CAVEAT if pixels else LPIPS_CAVEAT)
+    frames_note = MASKED_FRAMES if masked else (PIXELS_FRAMES if pixels else FRAMES)
+    direction = (("Lower is better for every metric except Token Cosine and Region Token Cosine (higher is better)."
+                  if "tokens" in rep else "Lower is better for every metric.")
+                 if (masked or pixels) else "Lower LPIPS and MSE are better.")
+    L = ["# Masked Frame scoring" if masked else ("# Change Map (pixels) scoring" if pixels else "# Change Map scoring"), "",
+         f"Split: {rep['split']}. {'Step Pairs' if pixels else 'Windows'}: {rep['n_windows']} ({rep['n_no_change']} No Change). "
+         f"Samples per {'Step Pair' if pixels else 'Window'}: arms k={rep['k']}, floors 1. "
+         + direction, "", frames_note, "",
          "## Caveats", "", f"- {CAPTION_LEAK}", f"- {caveat}", ""]
     if masked:
         L += [FLOOR_NOTES, "", HYPOTHESES, ""]
