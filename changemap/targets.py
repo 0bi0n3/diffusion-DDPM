@@ -239,7 +239,7 @@ class ChangeMapPixelsTarget:
     metrics = ("lpips", "region_lpips", "mse", "spill")
     compare_metrics = ("lpips", "region_lpips", "mse")
     higher_better = frozenset()
-    floor_names = ("all_black_floor",)
+    floor_names = ("all_black_floor", "mean_map_floor")
     panel_rows = 1
 
     @property
@@ -262,7 +262,11 @@ class ChangeMapPixelsTarget:
         return {"maps": frames.map_from_model_range(x)}
 
     def floors(self, tier, split, windows, truth=None) -> dict:
-        return {"all_black_floor": {"maps": np.zeros((len(windows), 1, frames.H, frames.W), np.float32)}}
+        n = len(windows)
+        train_w = load_windows(tier, "train")
+        mean_map = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)]).mean(0).astype(np.float32)
+        return {"all_black_floor": {"maps": np.zeros((n, 1, frames.H, frames.W), np.float32)},
+                "mean_map_floor": {"maps": np.broadcast_to(mean_map, (n, 1, frames.H, frames.W)).copy()}}
 
     def score_samples(self, pred, truth, windows, model, batch, device) -> dict:
         maps = pred["maps"]

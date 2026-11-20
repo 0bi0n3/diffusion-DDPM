@@ -64,7 +64,7 @@ def test_pixel_run_reports_both_pixel_and_latent_metrics_and_reuses_cache(tftier
     # Second score run reuses cached val and train Map Latents (only encodes generated arm + floor)
     fake_encoder.reset()
     rep2 = _score(tftier, tmp_path, "change_map_pixels", [arm], out="r2")
-    n_gen = len(VAL_IDS) * 2  # perfect (k=1) + all_black_floor (k=1)
+    n_gen = len(VAL_IDS) * 3  # perfect (k=1) + all_black_floor + mean_map_floor (k=1 each)
     assert fake_encoder.frames_encoded() == n_gen
     assert rep2["rows"] == rep1["rows"]
 
