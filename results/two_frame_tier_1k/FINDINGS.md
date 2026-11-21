@@ -56,9 +56,9 @@ All paired comparisons use **Window-resampled** bootstrap (`1,000` resamples, `s
 
 Four panels were rendered locally on CPU via `changemap panels` under [`panels/`](panels/):
 - [`frame_caption_t78_1187-1188@t78_1187.png`](panels/frame_caption_t78_1187-1188@t78_1187.png)
+- [`frame_caption_t78_1188-1189@t78_1187.png`](panels/frame_caption_t78_1188-1189@t78_1187.png)
+- [`frame_caption_t78_1189-1190@t78_1187.png`](panels/frame_caption_t78_1189-1190@t78_1187.png)
 - [`frame_caption_t78_1190-1191@t78_1187.png`](panels/frame_caption_t78_1190-1191@t78_1187.png)
-- [`frame_caption_t78_1192-1193@t78_1187.png`](panels/frame_caption_t78_1192-1193@t78_1187.png)
-- [`frame_caption_t78_1193-1194@t78_1187.png`](panels/frame_caption_t78_1193-1194@t78_1187.png)
 
 Qualitative observations:
 - The DiT produces sharp, coherent rectangular white UI change masks localized to the active central code-editor pane of the IDE — no mode collapse or salt-and-pepper noise.

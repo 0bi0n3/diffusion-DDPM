@@ -96,7 +96,7 @@ Region LPIPS supports a hypothesis when its upper bound is below 0; Region Token
 
 | hypothesis | a | b | Region LPIPS upper bound | pixel | Region Token Cosine lower bound | token | |
 |---|---|---|---|---|---|---|---|
-| H4 | frame_caption:best_of_k | frame_caption:single | -0.06163 | supported | 0.09689 | supported | agree |
+| H4 | frame_caption:best_of_k | frame_caption:single | -0.06163 | supported | 0.09617 | supported | agree |
 
 No hypothesis has disagreeing pixel and token conclusions.
 

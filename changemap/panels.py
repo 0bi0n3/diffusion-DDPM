@@ -55,18 +55,17 @@ def write_panels(out, arms: dict, windows, truth, panel_ids, target, max_samples
     return paths
 
 
-def _decode_input_frames(tier, split: str, panel_ids: list[str]) -> dict:
+def _decode_input_frames(tier, split: str, panel_ids: list[str], windows) -> dict:
     """Best-effort decode of Input Frame Ft (frames[-2]) at 224x400 RGB for just the selected panel Step Pairs."""
     import json
     from . import frames as frames_mod
-    from .data import load_windows, window_ids
+    from .data import window_ids
 
     path = Path(tier) / f"{split}_targets.jsonl"
     if not path.exists():
         return {}
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     rows = [r for r in rows if r.get("target_status") != "dropped"]
-    windows = load_windows(tier, split)
     ids = window_ids(windows)
     wanted_set = set(panel_ids)
     by_video: dict[str, set[int]] = {}
@@ -126,15 +125,20 @@ def render_from_report(tier, split: str, target_name: str, samples_paths, report
         smp = {key: z[key].astype(np.float32) if key == "mask" else z[key] for key in tg.sample_keys}
         per_arm[arm] = {"samples": smp, "pw": pw}
 
+    id_set = set(ids)
     if window_ids_override:
         panel_ids = list(window_ids_override)
     else:
-        change_ids = [wid for wid, w in zip(ids, windows) if not w.no_change]
-        other_ids = [wid for wid, w in zip(ids, windows) if w.no_change]
-        panel_ids = (change_ids + other_ids)[:n]
+        rep_panels = [wid for wid in (rep.get("panel_windows") or []) if wid in id_set]
+        if rep_panels:
+            panel_ids = rep_panels[:n] if n is not None else rep_panels
+        else:
+            change_ids = [wid for wid, w in zip(ids, windows) if not w.no_change]
+            other_ids = [wid for wid, w in zip(ids, windows) if w.no_change]
+            panel_ids = (change_ids + other_ids)[:n]
 
     if tg.name == "change_map_pixels":
         truth = dict(truth)
-        truth["input_frames"] = _decode_input_frames(tier, split, panel_ids)
+        truth["input_frames"] = _decode_input_frames(tier, split, panel_ids, windows)
 
     return write_panels(out, per_arm, windows, truth, panel_ids, tg)

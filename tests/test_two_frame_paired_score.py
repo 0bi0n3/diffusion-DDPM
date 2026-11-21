@@ -91,7 +91,7 @@ def test_cluster_two_frame_train_job_name_and_paired_score_sbatch(tmp_path):
                          "--script", str(score_sbatch)]) == 0
     stxt = score_sbatch.read_text()
     assert "#SBATCH --partition=a100" in stxt
-    assert "#SBATCH --mem=64G" in stxt
+    assert "#SBATCH --mem=128G" in stxt
     assert cluster.SIF_SHA256 in stxt
     assert "--target change_map_pixels" in stxt
     assert "--target map_latent" in stxt
@@ -126,5 +126,66 @@ def test_panels_cli_renders_pixel_panels_from_samples_and_report_and_refuses_map
     exits_nonzero(["panels", "--tier", str(tier), "--target", "map_latent", "--split", "val",
                    "--samples", str(pix_smp / "frame_caption.npz"), "--report", str(rep_dir / "report.json"),
                    "--out", str(tmp_path / "bad_panels")])
+
+
+def test_hypothesis_readings_keys_by_pair_no_overwrite():
+    from changemap.score import hypothesis_readings
+
+    comparisons = [
+        {"a": "frame_caption:best_of_k", "b": "frame_caption:single", "metric": "region_lpips",
+         "hypothesis": "H4", "ci_lo": -0.07363, "ci_hi": -0.06163},
+        {"a": "frame_caption:best_of_k", "b": "frame_caption:single", "metric": "region_token_cosine",
+         "hypothesis": "H4", "ci_lo": 0.09617, "ci_hi": 0.10900},
+        {"a": "frame_caption_map_latent:best_of_k", "b": "frame_caption_map_latent:single",
+         "metric": "region_token_cosine", "hypothesis": "H4", "ci_lo": 0.09689, "ci_hi": 0.10908},
+    ]
+    readings = hypothesis_readings(comparisons)
+    assert len(readings) == 1
+    r = readings[0]
+    assert r["hypothesis"] == "H4"
+    assert r["a"] == "frame_caption:best_of_k"
+    assert r["b"] == "frame_caption:single"
+    assert r["pixel_ci_hi"] == -0.06163
+    assert r["token_ci_lo"] == 0.09617
+    assert r["pixel_supported"] is True
+    assert r["token_supported"] is True
+    assert r["disagree"] is False
+
+
+def test_panels_default_to_report_panel_windows_and_forward_verdict(tmp_path):
+    import shutil
+    from changemap.panels import render_from_report
+
+    tier = write_two_frame_tier(tmp_path / "tier")
+    pix_run, pix_smp = tmp_path / "run_pix", tmp_path / "smp_pix"
+    rep_dir = tmp_path / "report"
+
+    assert cli(["train", "--tier", str(tier), "--target", "change_map_pixels", "--arm", "frame_caption",
+                "--qk-norm", "on", "--steps", "2", "--batch", "2", "--out", str(pix_run), *SMALL]) == 0
+    assert cli(["sample", "--tier", str(tier), "--target", "change_map_pixels", "--run", str(pix_run),
+                "--k", "2", "--steps", "2", "--out", str(pix_smp)]) == 0
+    assert cli(["score", "--tier", str(tier), "--target", "change_map_pixels", "--split", "val",
+                "--samples", str(pix_smp / "frame_caption.npz"), "--out", str(rep_dir), "--encoder", "standin"]) == 0
+
+    rep_path = rep_dir / "report.json"
+    rep = json.loads(rep_path.read_text())
+    # Choose a specific non-default order in panel_windows (e.g., reversed last two IDs)
+    chosen = list(reversed(rep["window_ids"][-2:]))
+    rep["panel_windows"] = chosen
+    rep_path.write_text(json.dumps(rep))
+
+    out_default = tmp_path / "panels_default"
+    paths = render_from_report(tier, "val", "change_map_pixels", [pix_smp / "frame_caption.npz"], rep_path, out_default, n=2)
+    assert [p.name for p in paths] == [f"frame_caption_{wid}.png" for wid in chosen]
+
+    # Copy val split files to test split and verify verdict=True succeeds without failing on split="test"
+    for src in tier.glob("val_*"):
+        shutil.copy(src, tier / src.name.replace("val_", "test_", 1))
+    out_test = tmp_path / "panels_test"
+    test_paths = render_from_report(
+        tier, "test", "change_map_pixels", [pix_smp / "frame_caption.npz"], rep_path, out_test, n=1, verdict=True,
+    )
+    assert [p.name for p in test_paths] == [f"frame_caption_{chosen[0]}.png"]
+
 
 

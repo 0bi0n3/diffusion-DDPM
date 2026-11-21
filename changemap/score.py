@@ -78,20 +78,21 @@ def _comparisons(values: dict, arms: list, tg, compare_metrics=None, groups=None
 
 
 def hypothesis_readings(comparisons: list) -> list:
-    """Per hypothesis (H1-H5) that has both: the pixel reading (Region LPIPS, supported when the upper bound is < 0) and the
-    token reading (Region Token Cosine, higher is better: supported when the lower bound is > 0), and whether they
+    """Per (hypothesis, a, b) pair that has both: the pixel reading (Region LPIPS, supported when the upper bound is < 0)
+    and the token reading (Region Token Cosine, higher is better: supported when the lower bound is > 0), and whether they
     disagree. Flagged, never resolved."""
     by = {}
     for c in comparisons:
         if "hypothesis" in c and c["metric"] in ("region_lpips", "region_token_cosine"):
-            by.setdefault(c["hypothesis"], {})[c["metric"]] = c
+            by.setdefault((c["hypothesis"], c["a"], c["b"]), {})[c["metric"]] = c
     out = []
-    for h in sorted(by):
-        pix, tok = by[h].get("region_lpips"), by[h].get("region_token_cosine")
+    for key in sorted(by):
+        h, a, b = key
+        pix, tok = by[key].get("region_lpips"), by[key].get("region_token_cosine")
         if pix is None or tok is None:
             continue
         ps, ts = pix["ci_hi"] < 0, tok["ci_lo"] > 0
-        out.append({"hypothesis": h, "a": pix["a"], "b": pix["b"], "pixel_ci_hi": pix["ci_hi"], "pixel_supported": bool(ps),
+        out.append({"hypothesis": h, "a": a, "b": b, "pixel_ci_hi": pix["ci_hi"], "pixel_supported": bool(ps),
                     "token_ci_lo": tok["ci_lo"], "token_supported": bool(ts), "disagree": bool(ps != ts)})
     return out
 
