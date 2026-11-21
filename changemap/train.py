@@ -26,7 +26,7 @@ from latentdit import transport  # noqa: E402
 
 from . import runrecord
 from . import targets
-from .data import GRID, load_context, load_windows
+from .data import GRID, load_context, load_windows, window_ids
 from .ema import EMA
 from .model import build_model, n_params, uses_context
 from .wandb_log import PROJECT, RunLog
@@ -100,9 +100,13 @@ def _save(path: Path, state: dict) -> None:
     tmp.replace(path)
 
 
-def _ctx(ctx, idx):
+def _ctx(ctx, idx, device=None):
     """The (f8, caption) context of the rows `idx`, or None for the Unconditional arm."""
-    return (ctx[0][idx], ctx[1][idx]) if ctx else None
+    if not ctx:
+        return None
+    if device is None:
+        return (ctx[0][idx], ctx[1][idx])
+    return (ctx[0][idx].to(device, non_blocking=True), ctx[1][idx].to(device, non_blocking=True))
 
 
 @torch.no_grad()
@@ -116,14 +120,14 @@ def validate(ema_model, val_x, val_ctx, val_ids, val_truth, shift, seed, opts, d
     g = torch.Generator().manual_seed(seed + 1)
     total = 0.0
     for i in range(0, len(val_x), 32):
-        x0 = val_x[i:i + 32]
+        x0 = val_x[i:i + 32].to(device, non_blocking=True)
         t, xt, ut = transport.training_batch(x0, shift, g)
         with torch.autocast(**autocast_cfg):
-            pred = ema_model(xt, t, _ctx(val_ctx, slice(i, i + 32)))
+            pred = ema_model(xt, t, _ctx(val_ctx, slice(i, i + 32), device))
         total += float(transport.velocity_loss(pred.float(), ut)) * len(x0)
     n = min(opts.val_samples, len(val_ids))
     noise = transport.window_noise(val_ids[:n], shape, seed).to(device)
-    x = transport.sample_euler(ema_model, noise, _ctx(val_ctx, slice(0, n)), opts.val_sample_steps, shift)
+    x = transport.sample_euler(ema_model, noise, _ctx(val_ctx, slice(0, n), device), opts.val_sample_steps, shift)
     mse = target.validation_mse(target.decode(x.cpu().numpy()), {k: v[:n] for k, v in val_truth.items()})
     return {"val_loss": total / len(val_x), "val_mse": mse}
 
@@ -180,15 +184,15 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
     bf16 = opts.amp == "bf16" or (opts.amp == "auto" and use_cuda and torch.cuda.is_bf16_supported())
     ac = dict(device_type=device.split(":")[0], dtype=torch.bfloat16, enabled=bf16)
 
-    data = torch.from_numpy(train_arr).to(device)
-    ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "train", [w.id for w in windows])] \
+    data = torch.from_numpy(train_arr)
+    ctx = [torch.from_numpy(a) for a in load_context(tier, "train", [w.key for w in windows])] \
         if uses_context(arm) else None
     val = load_windows(tier, "val")
     keep = sorted(np.random.default_rng(seed).permutation(len(val))[:opts.val_n])
     val = [val[i] for i in keep]
-    val_x = torch.from_numpy(tg.tensors(tier, "val", val)).to(device)
-    val_ids, val_truth = [w.id for w in val], tg.truths(tier, "val", val)
-    val_ctx = [torch.from_numpy(a).to(device) for a in load_context(tier, "val", val_ids)] if uses_context(arm) else None
+    val_x = torch.from_numpy(tg.tensors(tier, "val", val))
+    val_ids, val_truth = window_ids(val), tg.truths(tier, "val", val)
+    val_ctx = [torch.from_numpy(a) for a in load_context(tier, "val", [w.key for w in val])] if uses_context(arm) else None
 
     wb = RunLog.open(opts.wandb_mode, opts.wandb_project, opts.run_name or out.name, config, out)
     stop = {"flag": False}
@@ -222,11 +226,11 @@ def train(tier, arm: str, steps: int, out, batch: int = 64, lr: float = 1e-4, hi
             step_lr = lr_at(step + 1, lr, opts.warmup, steps)
             for grp in opt.param_groups:
                 grp["lr"] = step_lr
-            idx = torch.randint(len(data), (batch,), generator=g).to(device)
-            x0 = data[idx]
+            idx = torch.randint(len(data), (batch,), generator=g)
+            x0 = data[idx].to(device, non_blocking=True)
             t, xt, ut = transport.training_batch(x0, shift, g)
             with torch.autocast(**ac):
-                pred = model(xt, t, _ctx(ctx, idx))
+                pred = model(xt, t, _ctx(ctx, idx, device))
             loss = transport.velocity_loss(pred.float(), ut)
             opt.zero_grad()
             loss.backward()

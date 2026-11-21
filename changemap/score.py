@@ -15,26 +15,27 @@ from pathlib import Path
 import numpy as np
 
 from . import metrics, panels, report, targets, tokens
-from .data import load_windows
+from .data import load_windows, window_ids
 
 NO_PREVIOUS_RULE = "A Window with no previous Step Pair (absent or dropped) is scored as all black."
 ARM_ORDER = ("unconditional", "caption_only", "frame_only", "frame_caption")
 PANEL_WINDOWS = 4
 
 
-def _row(kind, pw, windows, higher_better) -> dict:
+def _row(kind, pw, windows, higher_better, ids=None) -> dict:
     """pw: {metric: (n, k)} per sample, NaN where undefined (None in the JSON)."""
     n, k = next(iter(pw.values())).shape
     nc = np.array([w.no_change for w in windows])
     hb = higher_better
+    ids = ids if ids is not None else window_ids(windows)
     summary = {"all": metrics.summarise(pw, np.ones(n, bool), hb), "change": metrics.summarise(pw, ~nc, hb),
                "no_change": metrics.summarise(pw, nc, hb)}
     return {"kind": kind, "k": k, "summary": summary,
-            "per_window": {w.id: {m: [None if np.isnan(v) else float(v) for v in pw[m][i]] for m in pw}
-                           for i, w in enumerate(windows)}}
+            "per_window": {wid: {m: [None if np.isnan(v) else float(v) for v in pw[m][i]] for m in pw}
+                           for i, wid in enumerate(ids)}}
 
 
-def _comparisons(values: dict, arms: list, tg, compare_metrics=None, groups=None) -> list:
+def _comparisons(values: dict, arms: list, tg, compare_metrics=None, groups=None, latent_arms: list = ()) -> list:
     """values[name] = {"single": {metric: (n,)}, "best_of_k": {...}}."""
     pairs = []
     for a in arms:
@@ -44,31 +45,54 @@ def _comparisons(values: dict, arms: list, tg, compare_metrics=None, groups=None
             pairs.append((f"{a}:single", f"{b}:single"))
     pairs += [(f"{a}:best_of_k", f"{a}:single") for a in arms]
     out = []
+    two_frame_h = {
+        ("frame_caption:single", "previous_target_floor:single", "region_lpips"): "H1",
+        ("frame_caption_map_latent:single", "previous_target_floor:single", "region_token_cosine"): "H2",
+        ("frame_caption_map_latent:single", "frame_caption:single", "region_token_cosine"): "H3",
+        ("frame_caption:best_of_k", "frame_caption:single", "region_lpips"): "H4",
+        ("frame_caption:best_of_k", "frame_caption:single", "region_token_cosine"): "H4",
+        ("frame_caption_map_latent:best_of_k", "frame_caption_map_latent:single", "region_token_cosine"): "H4",
+    } if latent_arms else {}
     for a, b in pairs:
         for metric in compare_metrics or tg.compare_metrics:
             va, vb = (values[x.split(":")[0]][x.split(":")[1]][metric] for x in (a, b))
             boot = metrics.paired_bootstrap(va - vb, groups=groups)
             if boot is not None:
-                h = getattr(tg, "hypotheses", {}).get((a, b))
+                h = two_frame_h.get((a, b, metric)) or getattr(tg, "hypotheses", {}).get((a, b))
                 out.append({"a": a, "b": b, "metric": metric, **({"hypothesis": h} if h else {}), **boot})
+    if latent_arms:
+        lat_metrics = targets.get("map_latent").compare_metrics
+        lat_pairs = []
+        for la in latent_arms:
+            lat_pairs += [(f"{la}:single", f"{f}:single") for f in tg.floor_names]
+            lat_pairs += [(f"{la}:single", f"{pa}:single") for pa in arms]
+            lat_pairs.append((f"{la}:best_of_k", f"{la}:single"))
+        for a, b in lat_pairs:
+            for metric in lat_metrics:
+                va, vb = (values[x.split(":")[0]][x.split(":")[1]][metric] for x in (a, b))
+                boot = metrics.paired_bootstrap(va - vb, groups=groups)
+                if boot is not None:
+                    h = two_frame_h.get((a, b, metric))
+                    out.append({"a": a, "b": b, "metric": metric, **({"hypothesis": h} if h else {}), **boot})
     return out
 
 
 def hypothesis_readings(comparisons: list) -> list:
-    """Per hypothesis (H1-H5) that has both: the pixel reading (Region LPIPS, supported when the upper bound is < 0) and the
-    token reading (Region Token Cosine, higher is better: supported when the lower bound is > 0), and whether they
+    """Per (hypothesis, a, b) pair that has both: the pixel reading (Region LPIPS, supported when the upper bound is < 0)
+    and the token reading (Region Token Cosine, higher is better: supported when the lower bound is > 0), and whether they
     disagree. Flagged, never resolved."""
     by = {}
     for c in comparisons:
         if "hypothesis" in c and c["metric"] in ("region_lpips", "region_token_cosine"):
-            by.setdefault(c["hypothesis"], {})[c["metric"]] = c
+            by.setdefault((c["hypothesis"], c["a"], c["b"]), {})[c["metric"]] = c
     out = []
-    for h in sorted(by):
-        pix, tok = by[h].get("region_lpips"), by[h].get("region_token_cosine")
+    for key in sorted(by):
+        h, a, b = key
+        pix, tok = by[key].get("region_lpips"), by[key].get("region_token_cosine")
         if pix is None or tok is None:
             continue
         ps, ts = pix["ci_hi"] < 0, tok["ci_lo"] > 0
-        out.append({"hypothesis": h, "a": pix["a"], "b": pix["b"], "pixel_ci_hi": pix["ci_hi"], "pixel_supported": bool(ps),
+        out.append({"hypothesis": h, "a": a, "b": b, "pixel_ci_hi": pix["ci_hi"], "pixel_supported": bool(ps),
                     "token_ci_lo": tok["ci_lo"], "token_supported": bool(ts), "disagree": bool(ps != ts)})
     return out
 
@@ -76,7 +100,7 @@ def hypothesis_readings(comparisons: list) -> list:
 def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None, device: str = "cpu",
           batch: int = 4, panel_windows: int = PANEL_WINDOWS, target: str = targets.DEFAULT,
           token_metrics: bool | None = None, encoder: str = "dinov3", encoder_device: str = "cpu",
-          latent_stats=None) -> dict:
+          latent_stats=None, latent_samples=()) -> dict:
     tg = targets.get(target)
     is_latent = tg.name == "map_latent"
     supports_tokens = tg.name in ("masked_frame", "change_map_pixels", "map_latent")
@@ -86,6 +110,10 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
         raise ValueError(f"--token-metrics on is not available for target {tg.name!r}")
     if is_latent and not token_metrics:
         raise ValueError("--token-metrics off is not available for target 'map_latent'")
+    if latent_samples and tg.name != "change_map_pixels":
+        raise ValueError("--latent-samples is only available with --target change_map_pixels")
+    if latent_samples and not token_metrics:
+        raise ValueError("--latent-samples requires --token-metrics on")
     enc = tokens.load_encoder(encoder, encoder_device) if token_metrics else None
     stats = tokens.load_stats(latent_stats) if token_metrics else None
     stats_src = str(latent_stats) if latent_stats else None
@@ -93,7 +121,7 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
     extra_cmp = ("region_token_cosine",) if (token_metrics and "region_token_cosine" not in tg.compare_metrics) else ()
     compare_metrics = tg.compare_metrics + extra_cmp
     windows = load_windows(tier, split, verdict)
-    ids = [w.id for w in windows]
+    ids = window_ids(windows)
     if is_latent and stats is None:
         stats, sp = tokens.train_map_latent_stats(tier, enc)
         stats_src = str(sp)
@@ -110,13 +138,25 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
             raise ValueError(f"{path}: no {missing} arrays (a {tg.name} samples file holds {tg.sample_keys})")
         arm_maps[str(z["arm"])] = {key: z[key].astype(np.float32) if key == "mask" else z[key] for key in tg.sample_keys}
     arm_maps = dict(sorted(arm_maps.items(), key=lambda kv: (ARM_ORDER.index(kv[0]) if kv[0] in ARM_ORDER else 99, kv[0])))
+    latent_arm_maps = {}
+    if latent_samples:
+        lat_tg = targets.get("map_latent")
+        for path in latent_samples:
+            z = np.load(path)
+            targets.require_same_target("map_latent", str(z["target"]) if "target" in z.files else None, f"latent samples {path}")
+            if list(z["ids"]) != ids:
+                raise ValueError(f"{path}: Window ids differ from the {split} split")
+            missing = [key for key in lat_tg.sample_keys if key not in z.files]
+            if missing:
+                raise ValueError(f"{path}: no {missing} arrays (a map_latent samples file holds {lat_tg.sample_keys})")
+            latent_arm_maps[f"{z['arm']}_map_latent"] = {key: z[key] for key in lat_tg.sample_keys}
     n = len(windows)
     if token_metrics and not is_latent:
         if tg.name == "masked_frame":
-            true_tok = tokens.true_tokens(tier, split, enc, ids, truth["rgb"])
+            true_tok = tokens.true_tokens(tier, split, enc, [w.id for w in windows], truth["rgb"])
             region = truth["grid"] > 0
         else:
-            true_tok = tokens.true_tokens(tier, split, enc, ids, tokens.map_rgb(truth["maps"]))
+            true_tok = tokens.true_tokens(tier, split, enc, [w.id for w in windows], tokens.map_rgb(truth["maps"]))
             region = np.stack([metrics.pool_mask(m) > 0 for m in truth["maps"]])
             if stats is None:
                 stats, sp = tokens.train_map_latent_stats(tier, enc)
@@ -133,11 +173,20 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
                     pw.update(tokens.score_samples(enc, true_tok, region, smp["rgb"], smp["mask"], stats))
                 else:
                     pw.update(tokens.score_maps(enc, true_tok, region, smp["maps"], stats))
-            rows[name] = _row(kind, pw, windows, higher_better)
+            rows[name] = _row(kind, pw, windows, higher_better, ids)
             values[name] = {"single": {m: metrics.mean_ignoring_nan(pw[m], axis=1) for m in pw},
                             "best_of_k": {m: metrics.best_of_k(pw[m], m in higher_better) for m in pw}}
             if kind == "arm":
                 per_arm[name] = {"samples": smp, "pw": pw}
+    if latent_arm_maps:
+        lat_tg = targets.get("map_latent")
+        lat_truth = {"raw_latents": true_tok, "region": region}
+        for name, smp in latent_arm_maps.items():
+            pw = lat_tg.score_samples(smp, lat_truth, windows, None, batch, device, stats=stats)
+            rows[name] = _row("arm", pw, windows, higher_better, ids)
+            rows[name]["target"] = "map_latent"
+            values[name] = {"single": {m: metrics.mean_ignoring_nan(pw[m], axis=1) for m in pw},
+                            "best_of_k": {m: metrics.best_of_k(pw[m], m in higher_better) for m in pw}}
     if "previous_target_floor" in rows:
         rows["previous_target_floor"]["n_no_previous"] = n_no_previous
     panel_ids = ids[:panel_windows] if tg.panel_rows > 0 else []
@@ -155,7 +204,8 @@ def score(samples, tier, split: str, out, verdict: bool = False, lpips_dir=None,
                          "weights_dir": str(lpips_dir) if lpips_dir else None}} if model is not None else {}),
            "caveats": [report.CAPTION_LEAK] + ([] if is_latent else [report.LPIPS_CAVEAT]), "panel_windows": panel_ids,
            "rows": rows, "comparisons": _comparisons(values, list(arm_maps), tg, compare_metrics,
-                                                     groups=[w.source_window_id or w.id for w in windows])}
+                                                     groups=[w.source_window_id or w.id for w in windows],
+                                                     latent_arms=list(latent_arm_maps))}
     if token_metrics:
         rep["hypothesis_readings"] = hypothesis_readings(rep["comparisons"])
     out.mkdir(parents=True, exist_ok=True)

@@ -10,7 +10,7 @@ from . import siblings  # noqa: F401
 from latentdit import transport  # noqa: E402
 
 from . import targets
-from .data import GRID, load_context, load_windows
+from .data import GRID, load_context, load_windows, window_ids
 from .model import build_model, uses_context
 
 
@@ -30,10 +30,10 @@ def sample(run, tier, split: str, k: int, steps: int, seed: int, out, verdict: b
                         qk_norm=cfg.get("qk_norm", False))
     model.load_state_dict(torch.load(run / "model.pt", map_location="cpu"))
     model.to(device).eval()
-    ids = [w.id for w in windows]
+    ids = window_ids(windows)
     if not ids or k < 1:
         raise ValueError(f"nothing to sample: {len(ids)} Windows, k = {k}")
-    ctx = [torch.from_numpy(a) for a in load_context(tier, split, ids, verdict)] if uses_context(cfg["arm"]) else None
+    ctx = [torch.from_numpy(a) for a in load_context(tier, split, [w.key for w in windows], verdict)] if uses_context(cfg["arm"]) else None
     out_arrays = None
     for j in range(k):
         for i in range(0, len(ids), batch):

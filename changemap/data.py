@@ -24,6 +24,17 @@ SPLITS = ("train", "val")
 TEST = "test"
 
 
+def window_key(id_: str, source_window_id: str | None = None) -> str:
+    """Unique row key: `<id>@<source_window_id>` for two-frame Step Pairs, else `<id>`."""
+    return f"{id_}@{source_window_id}" if source_window_id else id_
+
+
+def window_ids(windows: list[Window]) -> list[str]:
+    """Per-row unique identifiers: `w.id` when unique, else `w.key` (`<id>@<source_window_id>`)."""
+    ids = [w.id for w in windows]
+    return ids if len(set(ids)) == len(ids) else [w.key for w in windows]
+
+
 @dataclass(frozen=True)
 class Window:
     id: str
@@ -33,6 +44,10 @@ class Window:
     previous_frame: str | None = None        # optional image path of the Previous Frame (F8), for panels only
     previous_regions: tuple | None = None    # Significant Regions of the F7 -> F8 Step Pair; None when there is no previous pair
     source_window_id: str | None = None      # parent Window id for two-frame Step Pairs (None for Last-Step tiers)
+
+    @property
+    def key(self) -> str:
+        return window_key(self.id, self.source_window_id)
 
     @property
     def no_change(self) -> bool:
@@ -80,21 +95,37 @@ def load_windows(tier, split: str, verdict: bool = False) -> list[Window]:
         raise PermissionError("the test split is read only for a verdict: pass --verdict")
     if split not in SPLITS and split != TEST:
         raise ValueError(f"unknown split {split!r}")
+    rows = [json.loads(line) for line in (Path(tier) / f"{split}_targets.jsonl").read_text().splitlines() if line.strip()]
+    in_window = {}
+    for row in rows:
+        src, fr = row.get("source_window_id"), row.get("frames")
+        if src and isinstance(fr, list) and len(fr) == 2:
+            status = row["target_status"]
+            key = (src, int(fr[0]), int(fr[1]))
+            if status == "dropped":
+                in_window[key] = {"dropped": True}
+            elif status == "target":
+                in_window[key] = {"regions": row["regions"], "box_ok_50_20": row["box_ok_50_20"]}
+            elif status == "no_change":
+                in_window[key] = {"regions": [], "box_ok_50_20": []}
     out = []
     external = read_previous(tier, split)
-    for line in (Path(tier) / f"{split}_targets.jsonl").read_text().splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
+    for row in rows:
         status = row["target_status"]
         if status == "dropped":
             continue
         if status not in ("target", "no_change"):
             raise ValueError(f"{row['id']}: target_status {status!r} has no Grid Map")
         regions = significant_regions(row) if status == "target" else ()
-        prev = external[row["id"]] if row["id"] in external else row.get("previous")
+        src, fr = row.get("source_window_id"), row.get("frames")
+        prev_key = (src, int(fr[0]) - 1, int(fr[1]) - 1) if (src and isinstance(fr, list) and len(fr) == 2) else None
+        if prev_key in in_window:
+            prev = in_window[prev_key]
+        else:
+            key = window_key(row["id"], src)
+            prev = external[key] if key in external else (external[row["id"]] if row["id"] in external else row.get("previous"))
         out.append(Window(row["id"], regions, hints.change_map(regions, GRID).numpy(), previous_grid_map(prev),
-                          row.get("previous_frame"), previous_regions(prev), row.get("source_window_id")))
+                          row.get("previous_frame"), previous_regions(prev), src))
     return out
 
 
@@ -115,7 +146,7 @@ def load_index(tier, split: str, windows: list[Window], verdict: bool = False) -
         by_win[r["window"]] = tuple(tuple(float(v) for v in b) for b in r["regions_px_1920x1080"])
     out = []
     for w in windows:
-        key = f"{w.id}@{w.source_window_id}" if w.source_window_id else w.id
+        key = w.key
         if key not in by_win:
             raise ValueError(f"{path}: no index row for {key!r}")
         regs = by_win[key]
@@ -144,10 +175,16 @@ def load_context(tier, split: str, ids, verdict: bool = False) -> tuple[np.ndarr
         raise ValueError(f"{path} not found: Conditioning Arms that read context need it (format: see changemap.data)")
     z = np.load(path)
     row = {str(i): j for j, i in enumerate(z["ids"])}
-    missing = [i for i in ids if i not in row]
+    idx, missing = [], []
+    for i in ids:
+        if i in row:
+            idx.append(row[i])
+        elif "@" in i and i.split("@", 1)[0] in row:
+            idx.append(row[i.split("@", 1)[0]])
+        else:
+            missing.append(i)
     if missing:
         raise ValueError(f"{path} has no context for Windows {missing[:3]}")
-    idx = [row[i] for i in ids]
     return z["f8"][idx].astype(np.float32), z["caption"][idx].astype(np.float32)
 
 def mean_grid_map(tier) -> np.ndarray:

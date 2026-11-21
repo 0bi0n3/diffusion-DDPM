@@ -229,6 +229,20 @@ class MaskedFrameTarget:
         return f"sample {j + 1}\nRegion LPIPS {rl}\nMask MSE {pw['mask_mse'][i, j]:.4f}"
 
 
+def _two_frame_floor_maps(tier, windows) -> dict[str, np.ndarray]:
+    """Pixel-space (224, 400) float32 floor maps for two-frame targets:
+      all_black_floor        (224, 400) zeros
+      mean_map_floor         (224, 400) mean of verified training Change Maps
+      previous_target_floor  (n, 224, 400) each Step Pair's previous-pair Change Map (zeros when absent/dropped)
+    """
+    train_w = load_windows(tier, "train")
+    mean_map = np.stack([frames.change_mask(r) for r in load_index(tier, "train", train_w)]).mean(0).astype(np.float32)
+    prev_maps = np.stack([frames.change_mask(w.previous_regions or ()) for w in windows])
+    return {"all_black_floor": np.zeros((frames.H, frames.W), np.float32),
+            "mean_map_floor": mean_map,
+            "previous_target_floor": prev_maps}
+
+
 class ChangeMapPixelsTarget:
     """Change Map (pixels) at 224x400, 1 channel drawn from the verified Change Map image index and folded 8x8 into
     (28, 50, 64). Scored with full-frame LPIPS at 224x400, Region LPIPS on the padded crop, MSE and Spill."""
@@ -239,7 +253,8 @@ class ChangeMapPixelsTarget:
     metrics = ("lpips", "region_lpips", "mse", "spill")
     compare_metrics = ("lpips", "region_lpips", "mse")
     higher_better = frozenset()
-    floor_names = ("all_black_floor",)
+    floor_names = ("all_black_floor", "mean_map_floor", "previous_target_floor")
+    no_previous_rule = "A Step Pair with no previous Step Pair (absent or dropped) is scored as all black."
     panel_rows = 1
 
     @property
@@ -262,7 +277,11 @@ class ChangeMapPixelsTarget:
         return {"maps": frames.map_from_model_range(x)}
 
     def floors(self, tier, split, windows, truth=None) -> dict:
-        return {"all_black_floor": {"maps": np.zeros((len(windows), 1, frames.H, frames.W), np.float32)}}
+        n = len(windows)
+        fm = _two_frame_floor_maps(tier, windows)
+        return {"all_black_floor": {"maps": np.broadcast_to(fm["all_black_floor"], (n, 1, frames.H, frames.W)).copy()},
+                "mean_map_floor": {"maps": np.broadcast_to(fm["mean_map_floor"], (n, 1, frames.H, frames.W)).copy()},
+                "previous_target_floor": {"maps": fm["previous_target_floor"][:, None]}}
 
     def score_samples(self, pred, truth, windows, model, batch, device) -> dict:
         maps = pred["maps"]
@@ -310,7 +329,8 @@ class MapLatentTarget:
     metrics = ("token_cosine", "region_token_cosine", "token_mse")
     compare_metrics = ("region_token_cosine", "token_mse")
     higher_better = frozenset({"token_cosine", "region_token_cosine"})
-    floor_names = ("all_black_floor",)
+    floor_names = ("all_black_floor", "mean_map_floor", "previous_target_floor")
+    no_previous_rule = "A Step Pair with no previous Step Pair (absent or dropped) is scored as all black."
     panel_rows = 0
 
     @property
@@ -347,10 +367,21 @@ class MapLatentTarget:
     def floors(self, tier, split, windows, truth=None, enc=None, stats=None) -> dict:
         enc = enc or tokens.load_encoder("dinov3", "cpu")
         (mean, std), _ = self._stats(tier, enc, stats)
-        black_rgb = np.zeros((1, frames.H, frames.W, 3), np.uint8)
-        black_norm = ((tokens.encode_frames(enc, black_rgb)[0].astype(np.float32) - mean) / std).astype(np.float32)
-        arr = np.broadcast_to(black_norm, (len(windows), 1, *black_norm.shape)).copy()
-        return {"all_black_floor": {"latents": arr}}
+        n = len(windows)
+        fm = _two_frame_floor_maps(tier, windows)
+
+        def _enc_norm(maps_hw):
+            raw = tokens.encode_frames(enc, tokens.map_rgb(maps_hw)).astype(np.float32)
+            return ((raw - mean) / std).astype(np.float32)
+
+        black_norm, mean_norm = _enc_norm(np.stack([fm["all_black_floor"], fm["mean_map_floor"]]))
+        prev_lat = np.broadcast_to(black_norm, (n, *black_norm.shape)).copy()
+        non_empty = [i for i, w in enumerate(windows) if w.previous_regions]
+        if non_empty:
+            prev_lat[non_empty] = _enc_norm(fm["previous_target_floor"][non_empty])
+        return {"all_black_floor": {"latents": np.broadcast_to(black_norm, (n, 1, *black_norm.shape)).copy()},
+                "mean_map_floor": {"latents": np.broadcast_to(mean_norm, (n, 1, *mean_norm.shape)).copy()},
+                "previous_target_floor": {"latents": prev_lat[:, None]}}
 
     def score_samples(self, pred, truth, windows, model, batch, device, stats=None) -> dict:
         lat = pred["latents"]
