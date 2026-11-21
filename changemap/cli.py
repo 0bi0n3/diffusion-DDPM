@@ -65,6 +65,8 @@ def _parser() -> argparse.ArgumentParser:
     common(c, True)
     c.add_argument("--samples", action="append", default=[], type=Path,
                    help="a samples dir or .npz; repeat for several arms (none: floors only)")
+    c.add_argument("--latent-samples", action="append", default=[], type=Path,
+                   help="optional map_latent samples dir or .npz paired with change_map_pixels scoring")
     c.add_argument("--out", required=True, type=Path)
     c.add_argument("--lpips-dir", type=Path, help="folder with vgg16-397923af.pth and vgg.pth (env CHANGEMAP_LPIPS_DIR)")
     c.add_argument("--device", default="cpu", help=DEVICE_HELP)
@@ -123,6 +125,14 @@ def _parser() -> argparse.ArgumentParser:
     ml.add_argument("--encoder", choices=tokens.KINDS, default="dinov3")
     ml.add_argument("--device", default="cpu", help=DEVICE_HELP)
     ml.add_argument("--verdict", action="store_true", help="allow reading the test split")
+
+    pn = sub.add_parser("panels", help="render CPU panels from existing samples .npz and report.json")
+    common(pn, True)
+    pn.add_argument("--samples", action="append", required=True, type=Path)
+    pn.add_argument("--report", required=True, type=Path)
+    pn.add_argument("--out", required=True, type=Path)
+    pn.add_argument("--n", type=int, default=8)
+    pn.add_argument("--window-ids", nargs="*", default=None)
     return p
 
 
@@ -159,7 +169,7 @@ def main(argv=None) -> int:
                   f"{e['dropped']} dropped, {e['none']} none")
         elif a.cmd == "score":
             score_mod.score(_npz(a.samples), a.tier, a.split, a.out, a.verdict, a.lpips_dir, a.device, target=a.target,
-                            **token_kwargs(a))
+                            latent_samples=_npz(a.latent_samples), **token_kwargs(a))
         elif a.cmd == "gate":
             from . import gate as gate_mod
             res = gate_mod.check(a.run, a.max_loss_ratio, a.max_grad_norm)
@@ -173,6 +183,11 @@ def main(argv=None) -> int:
                 print(f"{s}: {info['windows']} Step Pairs -> {info['cache']}")
             if "train_stats" in res:
                 print(f"train_stats -> {res['train_stats']['path']}")
+        elif a.cmd == "panels":
+            from . import panels as panels_mod
+            paths = panels_mod.render_from_report(a.tier, a.split, a.target, _npz(a.samples), a.report, a.out,
+                                                  n=a.n, window_ids_override=a.window_ids, verdict=a.verdict)
+            print(f"wrote {len(paths)} panels to {a.out}")
         else:
             if a.split == "test" and not a.verdict:
                 raise PermissionError("the test split is read only for a verdict: pass --verdict")

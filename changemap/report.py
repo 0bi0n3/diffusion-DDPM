@@ -72,7 +72,14 @@ def render(rep: dict) -> str:
     pixels = rep["target"] == "change_map_pixels"
     latent = rep["target"] == "map_latent"
     two_frame = pixels or latent
-    names = [m for m in next(iter(rep["rows"].values()))["per_window"][rep["window_ids"][0]]] if rep["rows"] else []
+    has_paired_latent = any(r.get("target") == "map_latent" for r in rep["rows"].values())
+    names = []
+    if rep["rows"]:
+        wid0 = rep["window_ids"][0]
+        for r in rep["rows"].values():
+            for m in r["per_window"][wid0]:
+                if m not in names:
+                    names.append(m)
     cols = names + ["psnr"] if "mse" in names else names
     head = [HEADERS.get(m, m) if m != "psnr" else "PSNR (dB)" for m in cols]
     caveat = MASKED_LPIPS_CAVEAT if masked else (PIXELS_LPIPS_CAVEAT if pixels else LPIPS_CAVEAT)
@@ -100,6 +107,9 @@ def render(rep: dict) -> str:
         else:
             mse = (TOKEN_MSE_NORMALISED.format(stats=t["latent_stats"]) if t["normalised"] else TOKEN_MSE_RAW)
             L += [TOKEN_METHOD.format(enc=enc, mse=mse, cache=t["cache"]), "", TOKEN_HYPOTHESES, ""]
+    if has_paired_latent:
+        L += ["Map Latent rows (`*_map_latent`) are scored in latent space only; their predictions are not decoded to pixels "
+              "(pixel-space columns are n/a and no image panels are generated for them).", ""]
     if "previous_target_floor" in rep["rows"]:
         L += [f"Previous-Target Floor: {rep['no_previous_rule']} {'Step Pairs' if two_frame else 'Windows'} without a usable previous pair: "
               f"{rep['n_no_previous']} of {rep['n_windows']}.", ""]
@@ -110,19 +120,20 @@ def render(rep: dict) -> str:
             for part in ("all", "change", "no_change"):
                 s = r["summary"][part]
                 v = s[variant]
-                cells = " | ".join(_f(v[m], 2 if m == "psnr" else 5 if m.endswith("mse") else 4) for m in cols)
+                cells = " | ".join(_f(v.get(m), 2 if m == "psnr" else 5 if m.endswith("mse") else 4) for m in cols)
                 L.append(f"| {ROW_LABELS.get(name, name) if masked else name} | {part} | {s['n']} | {cells} |")
         L.append("")
     if "mse" in names:
         L += ["PSNR is computed from each row's mean MSE, never per Window; it is n/a when the mean MSE is 0.", ""]
+    show_h = masked or has_paired_latent
     L += [f"## Paired bootstrap ({rep['bootstrap']['resamples']} resamples, seed {rep['bootstrap']['seed']}, 95% interval)",
           "", "Difference a - b of per-Window values; negative means a is better (lower)"
           + ("; for Token Cosine and Region Token Cosine higher is better, so positive means a is better." if "tokens" in rep else "."), "",
-          "| a | b | metric | mean diff | 95% low | 95% high |" + (" hypothesis |" if masked else ""),
-          "|---|---|---|---|---|---|" + ("---|" if masked else "")]
+          "| a | b | metric | mean diff | 95% low | 95% high |" + (" hypothesis |" if show_h else ""),
+          "|---|---|---|---|---|---|" + ("---|" if show_h else "")]
     for c in rep["comparisons"]:
         L.append(f"| {c['a']} | {c['b']} | {c['metric']} | {_f(c['mean_diff'], 5)} | {_f(c['ci_lo'], 5)} | {_f(c['ci_hi'], 5)} |"
-                 + (f" {c.get('hypothesis', '')} |" if masked else ""))
+                 + (f" {c.get('hypothesis', '')} |" if show_h else ""))
     if rep.get("hypothesis_readings"):
         L += ["", "## Pixel and token conclusions", "",
               "Region LPIPS supports a hypothesis when its upper bound is below 0; Region Token Cosine when its lower bound is above 0. "
